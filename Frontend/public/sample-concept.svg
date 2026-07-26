@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="600" viewBox="0 0 960 600">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#92b7c4"/>
+      <stop offset=".58" stop-color="#d6cdb8"/>
+      <stop offset="1" stop-color="#9b795f"/>
+    </linearGradient>
+    <linearGradient id="road" x1="0" y1="0" x2="1" y2="1">
+      <stop stop-color="#363a3b"/>
+      <stop offset="1" stop-color="#0f1214"/>
+    </linearGradient>
+    <filter id="blur"><feGaussianBlur stdDeviation="18"/></filter>
+  </defs>
+  <rect width="960" height="600" fill="url(#sky)"/>
+  <circle cx="720" cy="128" r="88" fill="#f8dfad" opacity=".76" filter="url(#blur)"/>
+  <path d="M0 280 190 170 340 260 490 112 720 270 960 150V400H0Z" fill="#405554" opacity=".86"/>
+  <path d="M0 335 180 245 310 315 480 205 670 330 820 238 960 295V445H0Z" fill="#202f31"/>
+  <path d="M-80 650 455 280 1050 520 1050 680Z" fill="url(#road)"/>
+  <path d="M50 600 480 317 906 498" fill="none" stroke="#d9d0bd" stroke-width="7" stroke-dasharray="32 34" opacity=".85"/>
+  <g transform="translate(480 392) rotate(23)">
+    <rect x="-92" y="-35" width="184" height="70" rx="24" fill="#1d2024"/>
+    <path d="M-58-35-24-70h76l40 35Z" fill="#353c41"/>
+    <path d="M-35-60h28v25h-48Z" fill="#9db6be" opacity=".62"/>
+    <path d="M2-60h44l29 25H2Z" fill="#9db6be" opacity=".62"/>
+    <circle cx="-55" cy="38" r="17" fill="#08090a" stroke="#666" stroke-width="6"/>
+    <circle cx="55" cy="38" r="17" fill="#08090a" stroke="#666" stroke-width="6"/>
+    <rect x="-82" y="-15" width="20" height="10" rx="5" fill="#d8b26b"/>
+    <rect x="62" y="-15" width="20" height="10" rx="5" fill="#d65c52"/>
+  </g>
+  <rect width="960" height="600" fill="#10202d" opacity=".08"/>
+</svg>

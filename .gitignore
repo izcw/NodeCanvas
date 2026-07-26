@@ -1,0 +1,9 @@
+# Workspace artifacts
+.DS_Store
+
+# Keep the root clean; each service owns its own generated files.
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
