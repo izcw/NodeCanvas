@@ -23,27 +23,29 @@ function Workspace() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const knowledgeInputRef = useRef<HTMLInputElement>(null)
   const pendingNodePosition = useRef<XYPosition | undefined>(undefined)
+  const pendingNodeCreated = useRef<((id: string) => void) | undefined>(undefined)
   const { fitView } = useReactFlow()
   const groups = useMemo(() => getNodeGroups(nodes, edges).filter((group) => group.nodeIds.length > 1), [nodes, edges])
 
-  const addCanvasNode = useCallback((type: 'text' | 'image' | 'file' | 'comment', data: CanvasNodeData, canvasPosition?: XYPosition) => {
+  const addCanvasNode = useCallback((type: 'text' | 'image' | 'file' | 'comment', data: CanvasNodeData, canvasPosition?: XYPosition, onCreated?: (id: string) => void) => {
     const id = `${type}-${Date.now()}`
     const position = canvasPosition ?? { x: 180 + (nodes.length % 3) * 360, y: 180 + (nodes.length % 4) * 120 }
     const dimensions = type === 'text' ? { width: 330, height: 252 } : type === 'image' ? { width: 360, height: 258 } : type === 'file' ? { width: 320, height: 112 } : { width: 220, height: 145 }
     setNodes((current) => [...current, { id, type, position, data, style: dimensions }])
+    onCreated?.(id)
     window.setTimeout(() => fitView({ nodes: [{ id }], duration: 350, maxZoom: 1.1 }), 30)
   }, [fitView, nodes.length, setNodes])
 
-  const addText = useCallback((content = '', position?: XYPosition) => addCanvasNode('text', { title: content ? 'Agent 回应' : '灵感笔记', content }, position), [addCanvasNode])
+  const addText = useCallback((content = '', position?: XYPosition, onCreated?: (id: string) => void) => addCanvasNode('text', { title: content ? 'Agent 回应' : '灵感笔记', content }, position, onCreated), [addCanvasNode])
   const addComment = (position?: XYPosition) => addCanvasNode('comment', { title: '备注', content: '' }, position)
-  const chooseImage = (position?: XYPosition) => { pendingNodePosition.current = position; imageInputRef.current?.click() }
-  const chooseFile = (position?: XYPosition) => { pendingNodePosition.current = position; fileInputRef.current?.click() }
+  const chooseImage = (position?: XYPosition, onCreated?: (id: string) => void) => { pendingNodePosition.current = position; pendingNodeCreated.current = onCreated; imageInputRef.current?.click() }
+  const chooseFile = (position?: XYPosition, onCreated?: (id: string) => void) => { pendingNodePosition.current = position; pendingNodeCreated.current = onCreated; fileInputRef.current?.click() }
   const chooseKnowledge = () => knowledgeInputRef.current?.click()
   const onImageSelected = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
     if (!file) return
     const reader = new FileReader()
-    reader.onload = () => addCanvasNode('image', { title: file.name.replace(/\.[^.]+$/, ''), imageUrl: String(reader.result) }, pendingNodePosition.current)
+    reader.onload = () => { addCanvasNode('image', { title: file.name.replace(/\.[^.]+$/, ''), imageUrl: String(reader.result) }, pendingNodePosition.current, pendingNodeCreated.current); pendingNodeCreated.current = undefined }
     reader.readAsDataURL(file)
     event.target.value = ''
   }
@@ -58,7 +60,8 @@ function Workspace() {
     const file = event.target.files?.[0]
     if (!file) return
     const size = file.size > 1024 * 1024 ? `${(file.size / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(file.size / 1024))} KB`
-    addCanvasNode('file', { title: '项目附件', fileName: file.name, fileSize: size, fileKind: file.name.split('.').pop()?.toUpperCase().slice(0, 4) || 'FILE' }, pendingNodePosition.current)
+    addCanvasNode('file', { title: '项目附件', fileName: file.name, fileSize: size, fileKind: file.name.split('.').pop()?.toUpperCase().slice(0, 4) || 'FILE' }, pendingNodePosition.current, pendingNodeCreated.current)
+    pendingNodeCreated.current = undefined
     event.target.value = ''
   }
   const focusGroup = (nodeIds: string[]) => fitView({ nodes: nodeIds.map((id) => ({ id })), duration: 400, padding: 0.3 })
@@ -74,8 +77,8 @@ function Workspace() {
     <input ref={imageInputRef} className="visually-hidden" type="file" accept="image/*" onChange={onImageSelected} />
     <input ref={fileInputRef} className="visually-hidden" type="file" onChange={onFileSelected} />
     <input ref={knowledgeInputRef} className="visually-hidden" type="file" onChange={onKnowledgeSelected} />
-    <LeftSidebar collapsed={leftCollapsed} tab={sidebarTab} groups={groups} knowledge={knowledge} onTabChange={setSidebarTab} onToggle={() => setLeftCollapsed((value) => !value)} onFocusGroup={focusGroup} onUploadKnowledge={chooseKnowledge} onSelectKnowledge={setActiveKnowledge} />
-    <CanvasStage nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} setEdges={setEdges} onAddText={(position) => addText('', position)} onAddImage={chooseImage} onAddFile={chooseFile} onAddComment={addComment} onChatAnswer={addChatAnswer} knowledgePreview={activeKnowledge} onCloseKnowledgePreview={() => setActiveKnowledge(null)} leftCollapsed={leftCollapsed} agentCollapsed={agentCollapsed} onToggleLeft={() => setLeftCollapsed((value) => !value)} onToggleAgent={() => setAgentCollapsed((value) => !value)} />
+    <LeftSidebar collapsed={leftCollapsed} tab={sidebarTab} groups={groups} nodes={nodes} knowledge={knowledge} onTabChange={setSidebarTab} onToggle={() => setLeftCollapsed((value) => !value)} onFocusGroup={focusGroup} onRenameNode={(id, title) => setNodes((current) => current.map((node) => node.id === id ? { ...node, data: { ...node.data, title } } : node))} onUploadKnowledge={chooseKnowledge} onSelectKnowledge={setActiveKnowledge} onNewCanvas={() => { setNodes([]); setEdges([]); setActiveKnowledge(null); setSidebarTab('canvas') }} />
+    <CanvasStage nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} setEdges={setEdges} onAddText={(position, onCreated) => addText('', position, onCreated)} onAddImage={chooseImage} onAddFile={chooseFile} onAddComment={addComment} onChatAnswer={addChatAnswer} knowledgePreview={activeKnowledge} onCloseKnowledgePreview={() => setActiveKnowledge(null)} leftCollapsed={leftCollapsed} agentCollapsed={agentCollapsed} onToggleLeft={() => setLeftCollapsed((value) => !value)} onToggleAgent={() => setAgentCollapsed((value) => !value)} />
     <RightAssistant collapsed={agentCollapsed} onToggle={() => setAgentCollapsed((value) => !value)} onCreateText={(content) => addText(content)} />
   </main>
 }
