@@ -11,6 +11,7 @@ await cp(client, output, { recursive: true, force: true });
 for (const unused of ["og.png", "favicon.svg", "file.svg", "globe.svg", "window.svg", ".DS_Store", ".assetsignore", "_headers"]) {
   await rm(join(output, unused), { force: true });
 }
+await rm(join(output, ".vite"), { recursive: true, force: true });
 
 const { default: worker } = await import(join(root, "dist", "server", "index.js"));
 const response = await worker.fetch(
