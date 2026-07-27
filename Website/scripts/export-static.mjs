@@ -5,6 +5,7 @@ const root = resolve(new URL("..", import.meta.url).pathname);
 const output = join(root, "static-site");
 const client = join(root, "dist", "client");
 
+await rm(output, { recursive: true, force: true });
 await mkdir(output, { recursive: true });
 await cp(client, output, { recursive: true, force: true });
 for (const unused of ["og.png", "favicon.svg", "file.svg", "globe.svg", "window.svg", ".DS_Store", ".assetsignore", "_headers"]) {
