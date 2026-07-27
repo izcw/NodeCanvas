@@ -19,6 +19,8 @@
   --subtle: #616771;
   --blue: #61d5ff;
   --purple: #9d8cff;
+  --canvas-edge: #8294a6;
+  --canvas-edge-active: #b39ae6;
   --amber: #eab96e;
   --green: #73d6a2;
 }
@@ -499,12 +501,31 @@ textarea:focus-visible {
   outline: none;
 }
 
-.react-flow__edge-path {
+/* One consistent visual language for every canvas connection. */
+.react-flow__edge-path,
+.react-flow__connection-path {
+  stroke: var(--canvas-edge) !important;
+  stroke-width: 2.5px !important;
+  stroke-linecap: round;
+  fill: none;
   filter: drop-shadow(0 0 4px rgba(111, 149, 177, 0.15));
 }
 
-.react-flow__edge.animated path {
-  animation-duration: 1.4s;
+/* Selection animation lives on the edge itself, avoiding stacked paths and color blending. */
+.react-flow__edge-flow .edge-flow-path.is-active {
+  stroke: var(--canvas-edge-active) !important;
+  stroke-dasharray: 6 8;
+  stroke-linejoin: round;
+  filter: none;
+  animation: canvas-edge-flow 900ms linear infinite;
+}
+
+@keyframes canvas-edge-flow {
+  to { stroke-dashoffset: -14; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__edge-flow .edge-flow-path.is-active { animation: none; }
 }
 
 .canvas-node {
@@ -569,6 +590,7 @@ textarea:focus-visible {
 
 .canvas-node.is-selected .node-surface {
   border-color: #8b9caf;
+  border-style: dashed;
   box-shadow:
     0 0 0 1px rgba(139, 156, 175, 0.35),
     0 24px 80px rgba(0, 0, 0, 0.42),
@@ -1059,19 +1081,19 @@ textarea:focus-visible {
 .menu-icon.purple,
 .suggestion-icon.purple {
   color: #b6a8ff;
-  background: rgba(157, 140, 255, 0.12);
+  /* background: rgba(157, 140, 255, 0.12); */
 }
 
 .menu-icon.cyan,
 .suggestion-icon.blue {
   color: #78ddfa;
-  background: rgba(97, 213, 255, 0.12);
+  /* background: rgba(97, 213, 255, 0.12); */
 }
 
 .menu-icon.amber,
 .suggestion-icon.amber {
   color: #f0c67e;
-  background: rgba(234, 185, 110, 0.12);
+  /* background: rgba(234, 185, 110, 0.12); */
 }
 
 .chat-header {
@@ -1416,9 +1438,6 @@ textarea:focus-visible {
 .image-node-surface,
 .file-node-surface { height: 100% !important; }
 
-.react-flow__edge-path,
-.react-flow__connection-path { stroke-width: 2.5px; }
-
 .canvas-handle {
   z-index: 20;
   width: 34px !important;
@@ -1510,6 +1529,12 @@ textarea:focus-visible {
 }
 .selection-toolbar button:hover { background: #34363a; }
 .selection-toolbar-divider { width: 1px; height: 22px; margin: 0 5px; background: #57595e; }
+.selection-connect-handle { display: block; width: 12px; height: 12px; margin-left: 5px; border: 2px solid #e5f6ff; border-radius: 50%; background: #32b9ed; box-shadow: 0 0 0 3px rgba(50, 185, 237, .2); cursor: crosshair; }
+.selection-connector-node { overflow: visible !important; background: transparent !important; pointer-events: auto !important; }
+.selection-connector-node .selection-connect-handle { position: absolute !important; z-index: 30 !important; top: 50% !important; right: -8px !important; width: 12px !important; height: 12px !important; margin: 0 !important; pointer-events: all !important; transform: translateY(-50%) !important; }
+.selection-connect-handle:hover { background: #8be1ff; transform: scale(1.12); }
+.canvas-stage.selection-connecting .selection-connect-handle { opacity: 0; }
+.canvas-stage.selection-connecting .react-flow__connection-path { opacity: 0; }
 .selection-generate-panel {
   display: flex !important;
   width: 250px;
@@ -1522,6 +1547,9 @@ textarea:focus-visible {
   background: rgba(29, 30, 34, 0.97);
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.48);
 }
+.selection-generate-trigger { display: flex !important; width: 100%; min-height: 40px !important; align-items: center; justify-content: space-between; padding: 10px 12px !important; border: 0; border-radius: 10px; color: #dfe2e5; background: transparent; cursor: pointer; text-align: left; }
+.selection-generate-trigger:hover { background: #303237; }
+.selection-generate-trigger strong { padding: 0 !important; color: #e1e3e6; font-size: 12px; font-weight: 550; }
 .selection-generate-panel > strong { padding: 3px 9px 8px; color: #747a83; font-size: 11px; font-weight: 500; }
 .selection-generate-panel > button { position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr); align-items: center; gap: 10px; min-height: 54px; padding: 7px; border: 0; border-radius: 13px; color: #dfe2e5; background: transparent; text-align: left; cursor: pointer; }
 .selection-generate-panel > button:hover { background: #303237; }
@@ -1550,12 +1578,15 @@ textarea:focus-visible {
 .node-chat-input-wrap { position: relative; height: 112px; }
 .node-chat-composer textarea, .node-chat-highlight { position: absolute; inset: 0; width: 100%; height: 100%; padding: 18px 4px 8px; border: 0; font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow: auto; }
 .node-chat-composer textarea { z-index: 1; resize: none; outline: none; color: transparent; caret-color: #f2f3f5; background: transparent; }
+.node-chat-editor { position: absolute; inset: 0; width: 100%; height: 100%; box-sizing: border-box; padding: 18px 4px 8px; outline: none; color: #e0e4e7; font-size: 14px; line-height: 1.6; white-space: pre-wrap; overflow: auto; overflow-wrap: break-word; user-select: text; }
+.node-chat-editor.is-empty::before { color: #777e87; content: attr(data-placeholder); pointer-events: none; }
 .node-chat-highlight { z-index: 0; color: #e0e4e7; pointer-events: none; overflow-wrap: break-word; }
 .node-chat-highlight.is-empty { color: #777e87; }
 .mention-highlight { color: #c2b5ff; background: rgba(157, 140, 255, .18); border-radius: 4px; padding: 1px 2px; }
 .node-mention-menu { position: absolute; z-index: 5; left: 0; bottom: calc(100% - 2px); width: 250px; padding: 6px; border: 1px solid #34303f; border-radius: 12px; background: #18161f; box-shadow: 0 14px 30px rgba(0,0,0,.35); }
 .node-mention-menu button { display: flex; width: 100%; align-items: center; gap: 9px; padding: 8px; border: 0; border-radius: 8px; background: transparent; text-align: left; cursor: pointer; }
 .node-mention-menu button:hover { background: rgba(157,140,255,.14); }
+.node-mention-menu button.is-highlighted { background: rgba(157,140,255,.2); outline: 1px solid rgba(194,181,255,.45); outline-offset: -1px; }
 .node-mention-menu button > span:last-child { display: flex; flex-direction: column; gap: 2px; }
 .node-mention-menu strong { color: #f1eff8; font-size: 12px; font-weight: 500; }
 .node-mention-menu small { color: #888296; font-size: 10px; }
@@ -1766,7 +1797,12 @@ textarea:focus-visible {
 .canvas-source-handle.react-flow__handle-bottom.valid { transform: translate(-50%, 50%) !important; } */
 /* .canvas-source-handle.react-flow__handle-left:hover,
 .canvas-source-handle.react-flow__handle-left.valid { transform: translate(-50%, calc(-50% + 17px)) !important; } */
-.react-flow__edge.selected path { stroke: #b77cff !important; stroke-width: 4px !important; filter: drop-shadow(0 0 5px rgba(183,124,255,.65)); }
+/* A manually selected connection is purple while keeping the shared thickness. */
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: var(--canvas-edge-active) !important;
+  stroke-width: 2.5px !important;
+  filter: drop-shadow(0 0 5px rgba(179, 154, 230, 0.36));
+}
 
 .node-resize-line { opacity: 0 !important; }
 
@@ -2322,6 +2358,7 @@ textarea:focus-visible {
 
 .canvas-node.is-selected .node-card {
   border-color: #92a7bb;
+  border-style: dashed;
   box-shadow:
     0 0 0 1px rgba(146, 167, 187, 0.3),
     0 24px 80px rgba(0, 0, 0, 0.44),
@@ -2334,7 +2371,7 @@ textarea:focus-visible {
   left: 0;
   z-index: 2;
   display: flex;
-  width: min(100%, 360px);
+  width: 100%;
   height: 28px;
   align-items: center;
   gap: 8px;
@@ -2407,6 +2444,36 @@ textarea:focus-visible {
 .node-card__body--text {
   padding: 13px 15px 15px;
 }
+
+.node-card__body--text textarea { padding-bottom: 30px; }
+
+/* Card-count picker follows the same compact treatment as the model picker. */
+.card-count-picker .card-count-trigger {
+  min-height: 30px;
+  min-width: 62px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 0 9px;
+  border: 1px solid #35303f;
+  border-radius: 8px;
+  background: #26232d;
+  color: #d8dbe2;
+}
+.card-count-picker .card-count-menu {
+  width: 220px;
+  min-width: 220px;
+  padding: 6px;
+  border-radius: 10px;
+}
+.card-count-picker .card-count-menu button {
+  min-height: 42px;
+  padding: 8px 10px;
+}
+.text-format-picker { position: absolute; z-index: 3; bottom: 7px; left: 10px; margin: 0; }
+.text-format-picker .node-model-trigger { height: 27px; padding: 0 7px; color: #9fa7b0; font-size: 10px; }
+.text-format-picker .node-model-menu { bottom: calc(100% + 7px); left: 0; width: 220px; }
 
 .node-card__body textarea {
   width: 100%;
@@ -2607,3 +2674,72 @@ textarea:focus-visible {
   margin: 4px 2px;
   background: #3b3f46;
 }
+
+/* Agent nodes share the same composer as node-level chat, but live inside the card. */
+.canvas-node--agent .node-card {
+  border-color: rgba(154, 135, 255, 0.35);
+  background: linear-gradient(155deg, rgba(42, 38, 59, 0.98), rgba(22, 24, 29, 0.99));
+}
+
+.canvas-node--agent .node-card__icon { color: #c5b9ff; }
+.node-card__body--agent { overflow: visible; padding: 6px 10px 10px; }
+.node-chat-composer--agent {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.node-chat-composer--agent .node-chat-input-wrap { height: calc(100% - 76px); min-height: 106px; }
+.node-chat-composer--agent header { font-size: 11px; }
+
+/* The left port accepts context; the right port is the only output. */
+.node-anchor--left .canvas-target-handle {
+  width: 12px !important;
+  height: 12px !important;
+  border: 2px solid #9e8dff !important;
+  border-radius: 50% !important;
+  background: #101215 !important;
+  box-shadow: 0 0 0 2px #000 !important;
+  opacity: 0;
+}
+.canvas-node:hover .node-anchor--left .canvas-target-handle,
+.canvas-node.is-selected .node-anchor--left .canvas-target-handle,
+.react-flow__handle.connectingto.canvas-target-handle { opacity: 1; }
+
+.node-anchor--left .canvas-target-handle {
+  width: 32px !important;
+  height: 32px !important;
+  border: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  opacity: 0 !important;
+}
+
+.node-anchor--left .canvas-context-handle {
+  width: 12px !important;
+  height: 12px !important;
+  /* border-color: #9e8dff !important; */
+}
+
+/* Resize affordances appear one at a time only when the pointer reaches a corner. */
+.canvas-node:hover .node-resize-handle,
+.canvas-node.is-selected .node-resize-handle { opacity: 0; }
+.node-resize-handle:hover { opacity: 1 !important; }
+.node-resize-handle.top:not(.left):not(.right),
+.node-resize-handle.bottom:not(.left):not(.right),
+.node-resize-handle.left:not(.top):not(.bottom),
+.node-resize-handle.right:not(.top):not(.bottom) { display: none !important; }
+
+.canvas-dock button:disabled {
+  color: #59616a !important;
+  background: transparent !important;
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+/* Keep the format control clear of the editable text area. */
+.node-card__body--text textarea { padding-bottom: 30px; }

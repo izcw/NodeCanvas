@@ -16,6 +16,10 @@ import {
 } from '@xyflow/react'
 import {
   Copy,
+  Bot,
+  Check,
+  ChevronDown,
+  Code2,
   Expand,
   File,
   FileText,
@@ -25,6 +29,8 @@ import {
   Trash2,
 } from 'lucide-react'
 import type { CanvasNode } from '../../types/canvas'
+import { NodeChatComposer } from './NodeChatComposer'
+import { NodeSelect } from './NodeSelect'
 
 type NodeKind = CanvasNode['type']
 
@@ -47,32 +53,23 @@ type NodeHeaderProps = {
   nodeId: string
 }
 
-const handlePositions = [
-  ['top', Position.Top],
-  ['right', Position.Right],
-  ['bottom', Position.Bottom],
-  ['left', Position.Left],
-] as const
+function openConnectionMenu(event: React.MouseEvent, sourceId: string, side: 'context' | 'reference') {
+  event.stopPropagation()
+  window.dispatchEvent(new CustomEvent('nodecanvas:open-connection-menu', {
+    detail: { sourceId, side, x: event.clientX, y: event.clientY },
+  }))
+}
 
-function NodeHandles() {
+function NodeHandles({ id }: { id: string }) {
   return (
     <>
-      {handlePositions.map(([name, position]) => (
-        <span className={`node-anchor node-anchor--${name}`} key={name}>
-          <Handle
-            id={`${name}-target`}
-            className="canvas-handle canvas-target-handle"
-            type="target"
-            position={position}
-          />
-          <Handle
-            id={`${name}-source`}
-            className="canvas-handle canvas-source-handle"
-            type="source"
-            position={position}
-          />
-        </span>
-      ))}
+      <span className="node-anchor node-anchor--left" aria-label="添加上下文" title="添加上下文">
+        <Handle id="left-target" className="canvas-handle canvas-target-handle" type="target" position={Position.Left} />
+        <Handle id="left-context-source" className="canvas-handle canvas-source-handle canvas-context-handle" type="source" position={Position.Left} onClick={(event) => openConnectionMenu(event, id, 'context')} />
+      </span>
+      <span className="node-anchor node-anchor--right" aria-label="引用该节点生成" title="引用该节点生成">
+        <Handle id="right-source" className="canvas-handle canvas-source-handle" type="source" position={Position.Right} onClick={(event) => openConnectionMenu(event, id, 'reference')} />
+      </span>
     </>
   )
 }
@@ -245,7 +242,7 @@ function NodeFrame({
         lineClassName="node-resize-line"
         handleClassName="node-resize-handle"
       />
-      {connectable && <NodeHandles />}
+      {connectable && <NodeHandles id={id} />}
       <div className="node-card">{children}</div>
       {menuOpen && (
         <NodeContextMenu
@@ -286,6 +283,7 @@ function NodeHeader({
 
 export const TextNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => {
   const { updateNodeData } = useReactFlow()
+  const format = data.format ?? 'text'
 
   return (
     <NodeFrame
@@ -311,6 +309,7 @@ export const TextNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
           placeholder="写下想法、脚本或提示词…"
           aria-label={`${data.title}内容`}
         />
+        <NodeSelect className="text-format-picker" value={format} ariaLabel="选择文本格式" onChange={(value) => updateNodeData(id, { format: value as 'text' | 'markdown' })} options={[{ value: 'text', label: '纯文本', description: '普通文本编辑', icon: <FileText size={18} /> }, { value: 'markdown', label: 'Markdown', description: '支持 Markdown 语法', icon: <Code2 size={18} /> }]} />
       </div>
     </NodeFrame>
   )
@@ -367,7 +366,7 @@ export const FileNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
           <b>{data.fileKind || 'FILE'}</b>
         </span>
         <span className="node-card__file-copy">
-          <strong>{data.fileName || '品牌拍摄需求.pdf'}</strong>
+          <strong>{data.fileName || '键盘产品卖点.pdf'}</strong>
           <small>{data.fileSize || '2.4 MB'} · 已解析</small>
         </span>
       </div>
@@ -412,14 +411,57 @@ export const CommentNode = memo(
   },
 )
 
+export const AgentNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => {
+  const { getEdges, getNodes } = useReactFlow()
+  const allNodes = getNodes() as CanvasNode[]
+  const allowedNodeIds = new Set(getEdges().flatMap((edge) => {
+    if (edge.target === id && (!edge.targetHandle || edge.targetHandle === 'left-target')) return [edge.source]
+    if (edge.source === id && (!edge.sourceHandle || edge.sourceHandle === 'right-source')) return [edge.target]
+    return []
+  }))
+
+  return (
+    <NodeFrame
+      id={id}
+      kind="agent"
+      selected={selected}
+      minWidth={390}
+      minHeight={290}
+      maxWidth={680}
+      maxHeight={560}
+    >
+      <NodeHeader
+        icon={<Bot size={16} />}
+        label="Agent 节点"
+        title={data.title}
+        nodeId={id}
+      />
+      <div className="node-card__body node-card__body--agent nodrag nopan nowheel">
+        <NodeChatComposer
+          mode="agent"
+          nodeTitle={data.title}
+          nodes={allNodes.filter((node) => allowedNodeIds.has(node.id))}
+          onSend={(prompt, model) => {
+            window.dispatchEvent(new CustomEvent('nodecanvas:agent-send', {
+              detail: { sourceId: id, prompt, model },
+            }))
+          }}
+        />
+      </div>
+    </NodeFrame>
+  )
+})
+
 TextNode.displayName = 'TextNode'
 ImageNode.displayName = 'ImageNode'
 FileNode.displayName = 'FileNode'
 CommentNode.displayName = 'CommentNode'
+AgentNode.displayName = 'AgentNode'
 
 export const nodeTypes = {
   text: TextNode,
   image: ImageNode,
   file: FileNode,
   comment: CommentNode,
+  agent: AgentNode,
 }

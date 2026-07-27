@@ -7,9 +7,10 @@ export type CanvasNodeData = {
   fileName?: string
   fileSize?: string
   fileKind?: string
+  format?: 'text' | 'markdown'
 }
 
-export type CanvasNode = Node<CanvasNodeData, 'text' | 'image' | 'file' | 'comment'>
+export type CanvasNode = Node<CanvasNodeData, 'text' | 'image' | 'file' | 'comment' | 'agent'>
 export type CanvasEdge = Edge
 
 export type KnowledgeItem = {

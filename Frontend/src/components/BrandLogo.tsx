@@ -3,7 +3,7 @@ import { useState } from 'react'
 type BrandLogoProps = { compact?: boolean; onClick?: () => void }
 
 export function BrandLogo({ compact = false, onClick }: BrandLogoProps) {
-  const [name, setName] = useState('新能源旅行公路短片')
+  const [name, setName] = useState('键盘卖点营销')
   const [editing, setEditing] = useState(false)
   return (
     <div className={`brand-logo ${compact ? 'compact' : ''} ${onClick ? 'is-clickable' : ''}`} onClick={onClick} role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined} onKeyDown={(event) => { if (onClick && (event.key === 'Enter' || event.key === ' ')) onClick() }}>

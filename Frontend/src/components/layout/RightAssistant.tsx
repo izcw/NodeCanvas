@@ -29,11 +29,11 @@ export function RightAssistant({ collapsed, onToggle, onCreateText }: RightAssis
       </header>
       <div className="chat-history-strip"><button className="active"><Plus size={14} />新建对话</button><button><History size={14} />对话历史</button></div>
       <div className="chat-body">
-        <div className="chat-hero"><div className="ai-orb large"><Sparkles size={22} /></div><span>灵构 Agent</span><h2>今天一起构想什么？</h2><p>我会基于当前画布分支和共享知识库，持续理解你的创作方向。</p></div>
+        <div className="chat-hero"><div className="ai-orb large"><Sparkles size={22} /></div><span>灵构 Agent</span><h2>今天一起卖什么？</h2><p>我会基于键盘产品卖点与当前画布，持续完善内容营销方向。</p></div>
         <div className="suggestions">
-          <Suggestion icon={Aperture} tone="blue" title="生成镜头清单" hint="基于当前创意简报" onClick={() => setPrompt('基于当前画布，帮我补充一份三镜头的拍摄清单')} />
-          <Suggestion icon={Workflow} tone="purple" title="检查上下文冲突" hint="梳理节点依赖关系" onClick={() => setPrompt('检查画布中是否有互相冲突的创意方向')} />
-          <Suggestion icon={WandSparkles} tone="amber" title="探索更多方向" hint="生成差异化候选" onClick={() => setPrompt('从当前方案延展三个差异明显的视觉风格')} />
+          <Suggestion icon={Aperture} tone="blue" title="生成种草脚本" hint="围绕产品核心卖点" onClick={() => setPrompt('围绕这款键盘的轻盈、磁轴和电竞属性，生成一版 30 秒短视频种草脚本')} />
+          <Suggestion icon={Workflow} tone="purple" title="拆解内容支柱" hint="搭建营销传播结构" onClick={() => setPrompt('为这款键盘拆解三个内容支柱，并说明各自适合的社媒形式')} />
+          <Suggestion icon={WandSparkles} tone="amber" title="探索传播方向" hint="生成差异化候选" onClick={() => setPrompt('围绕“不羁风范，与生俱来”延展三个差异明显的内容创意')} />
         </div>
         {messages.length > 0 && <div className="chat-messages">{messages.map((message, index) => <div className="user-message" key={`${message}-${index}`}>{message}</div>)}<div className="assistant-message"><span><Sparkles size={13} />已写入新的文本节点</span>连接到任意参考节点，即可把需求纳入当前分支。</div></div>}
       </div>
