@@ -2,6 +2,7 @@ import { Github } from "lucide-react";
 import { SiteHeader } from "./components/SiteHeader";
 import { ProductSection, type ProductSectionData } from "./components/ProductSection";
 import { HeroStage } from "./components/HeroStage";
+import { HashLink } from "./components/HashLink";
 
 const HERO_IMAGE =
   "https://www.lumehub.duoyu.link/resource/blog/original/cb2e47afbfcd_20260727.png";
@@ -80,7 +81,7 @@ export default function Home() {
           <h1>把创意过程，变成一张会生长的图。</h1>
           <p className="hero-copy">以可编辑的上下文图替代线性聊天，让 AI 策划更连续、更一致、更可控。</p>
           <div className="hero-actions">
-            <a className="button button-light" href="#canvas">开始探索</a>
+            <HashLink className="button button-light" href="#canvas">开始探索</HashLink>
           </div>
         </div>
 
@@ -96,20 +97,20 @@ export default function Home() {
       <section className="final-cta">
         <div className="final-orbit" aria-hidden="true" />
         <h2>开始体验灵构</h2>
-        <a className="button button-light" href="#canvas">免费开始</a>
+        <HashLink className="button button-light" href="#canvas">免费开始</HashLink>
       </section>
 
       <footer>
        <div className="brand-box">
-        <a className="brand brand-footer" href="#top" aria-label="灵构返回顶部">
+        <HashLink className="brand brand-footer" href="#top" aria-label="灵构返回顶部">
             <img className="brand-logo-image" src="/logo.png" alt="灵构" />
             <span>灵构</span>
-          </a>
+        </HashLink>
           <div className="footer-socials" aria-label="社交链接">
-            <a href="https://space.bilibili.com/479608201?spm_id_from=333.1007.0.0" target="_blank" rel="noreferrer" aria-label="哔哩哔哩">B</a>
+            <a href="https://space.bilibili.com/479608201?spm_id_from=333.1007.0.0" target="_blank" rel="noreferrer" aria-label="哔哩哔哩">bilibili</a>
             <a href="https://github.com/izcw" target="_blank" rel="noreferrer" aria-label="GitHub"><Github size={15} /></a>
           </div>
-          <a className="back-top" href="#top">回到顶部 ↑</a>
+        <HashLink className="back-top" href="#top">回到顶部 ↑</HashLink>
        </div>
         <div className="copyright-box">
           <p className="copyright">隐私政策&nbsp; | &nbsp;服务条款</p>

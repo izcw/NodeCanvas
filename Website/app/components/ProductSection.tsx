@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { HashLink } from "./HashLink";
 
 export type ProductSectionData = {
   id: string;
@@ -74,9 +75,9 @@ export function ProductSection({ section, index }: ProductSectionProps) {
         <div className="section-copy">
           <h2>{section.title}</h2>
           <p>{section.description}</p>
-          <a className="section-link" href={index === 4 ? "#top" : `#${index === 3 ? "roadmap" : sectionsNext[index]}`}>
+          <HashLink className="section-link" href={(index === 4 ? "#top" : `#${index === 3 ? "roadmap" : sectionsNext[index]}`) as `#${string}`}>
             {index === 4 ? "回到顶部" : "继续探索"}
-          </a>
+          </HashLink>
         </div>
 
         <div className="visual-wrap">

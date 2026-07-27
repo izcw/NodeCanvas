@@ -755,11 +755,11 @@ footer {
 
 .footer-socials a {
   display: grid;
-  width: 34px;
+  min-width: 34px;
   height: 34px;
   place-items: center;
   border-radius: 9px;
-  background: #303035;
+  /* background: #303035; */
   color: #f0eff0;
   font-size: 13px;
 }

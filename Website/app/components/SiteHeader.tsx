@@ -2,6 +2,7 @@
 
 import { Menu, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { HashLink } from "./HashLink";
 
 const navItems = [
   { label: "画布", href: "#canvas" },
@@ -23,20 +24,20 @@ export function SiteHeader() {
 
   return (
     <header className={scrolled ? "site-header is-scrolled" : "site-header"}>
-      <a className="brand" href="#top" aria-label="灵构首页">
+      <HashLink className="brand" href="#top" aria-label="灵构首页">
         <img className="brand-logo-image" src="/logo.png" alt="灵构" />
         <span>灵构</span>
-      </a>
+      </HashLink>
 
       <nav className={open ? "site-nav is-open" : "site-nav"} aria-label="主要导航">
         {navItems.map((item) => (
-          <a key={item.href} href={item.href} onClick={() => setOpen(false)}>
+          <HashLink key={item.href} href={item.href as `#${string}`} onClick={() => setOpen(false)}>
             {item.label}
-          </a>
+          </HashLink>
         ))}
       </nav>
 
-      <a className="header-cta" href="#canvas">了解产品</a>
+      <HashLink className="header-cta" href="#canvas">了解产品</HashLink>
 
       <button
         className="menu-button"

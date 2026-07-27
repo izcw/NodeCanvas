@@ -32,6 +32,6 @@ test("server-renders the NodeCanvas product site", async () => {
   assert.match(html, /把创意过程/);
   assert.match(html, /Context Graph/);
   assert.match(html, /Schema/);
-  assert.match(html, /og\.png/);
+  assert.doesNotMatch(html, /og\.png/i);
   assert.doesNotMatch(html, /codex-preview|Building your site|react-loading-skeleton/i);
 });
