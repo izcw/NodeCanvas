@@ -9,6 +9,11 @@ from pathlib import Path
 class Settings:
     database_path: Path
     cors_origins: tuple[str, ...]
+    pgvector_database_url: str | None
+    embedding_base_url: str | None
+    embedding_api_key: str | None
+    embedding_model: str
+    embedding_dimensions: int
 
 
 def get_settings() -> Settings:
@@ -22,4 +27,14 @@ def get_settings() -> Settings:
         ).split(",")
         if origin.strip()
     )
-    return Settings(database_path=database_path, cors_origins=origins)
+    pgvector_database_url = os.getenv("NODECANVAS_PGVECTOR_DATABASE_URL", "").strip() or None
+    embedding_base_url = os.getenv("NODECANVAS_EMBEDDING_BASE_URL", "").strip().rstrip("/") or None
+    return Settings(
+        database_path=database_path,
+        cors_origins=origins,
+        pgvector_database_url=pgvector_database_url,
+        embedding_base_url=embedding_base_url,
+        embedding_api_key=os.getenv("NODECANVAS_EMBEDDING_API_KEY", "").strip() or None,
+        embedding_model=os.getenv("NODECANVAS_EMBEDDING_MODEL", "text-embedding-3-small"),
+        embedding_dimensions=int(os.getenv("NODECANVAS_EMBEDDING_DIMENSIONS", "384")),
+    )

@@ -13,17 +13,48 @@ from .config import get_settings
 from .graph_ops import apply_agent_result
 from .model_testing import test_model_connection
 from .repository import SQLiteRepository
+from .vector_store import EmbeddingProvider, PgvectorKnowledgeIndex
 
 
 settings = get_settings()
 repository = SQLiteRepository(settings.database_path)
 workflow = AgentWorkflow()
+vector_index = PgvectorKnowledgeIndex(
+    settings.pgvector_database_url,
+    EmbeddingProvider(
+        base_url=settings.embedding_base_url,
+        api_key=settings.embedding_api_key,
+        model=settings.embedding_model,
+        dimensions=settings.embedding_dimensions,
+    ),
+)
+
+
+def index_knowledge_document(project_id: str, document_id: str) -> str:
+    """Synchronize a document's derived vector index without losing source data."""
+    if not vector_index.enabled:
+        repository.set_knowledge_index_status(project_id, document_id, "indexed")
+        return "indexed"
+    document = repository.knowledge_document(project_id, document_id)
+    if not document:
+        raise ValueError("knowledge document not found")
+    try:
+        vector_index.index_document(project_id, document_id, str(document["name"]), repository.knowledge_chunks(project_id, document_id))
+    except Exception as exc:
+        repository.set_knowledge_index_status(project_id, document_id, "failed", str(exc)[:800])
+        return "failed"
+    repository.set_knowledge_index_status(project_id, document_id, "indexed")
+    return "indexed"
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     repository.initialize()
     repository.ensure_project("default", "默认画布")
+    vector_index.initialize()
+    if vector_index.enabled:
+        for project_id, document_id, _chunks in repository.all_knowledge_chunks():
+            index_knowledge_document(project_id, document_id)
     yield
 
 
@@ -136,7 +167,7 @@ def get_shared_graph(share_id: str) -> GraphSnapshot:
 @app.post("/api/projects/{project_id}/agent/runs", response_model=AgentRunResponse)
 def run_agent(project_id: str, request: AgentRunRequest) -> AgentRunResponse:
     try:
-        knowledge = repository.search_knowledge(project_id, request.prompt)
+        knowledge = vector_index.search(project_id, request.prompt) if vector_index.enabled else repository.search_knowledge(project_id, request.prompt)
         result = workflow.run(request, knowledge=knowledge)
         updated_graph = apply_agent_result(request.graph, result)
         stored_graph = repository.save_graph(project_id, updated_graph)
@@ -162,12 +193,21 @@ def add_knowledge_document(project_id: str, document: KnowledgeDocumentCreate) -
             document.name,
             document.kind,
             document.content,
+            status="indexing" if vector_index.enabled else "indexed",
         )
+        status = index_knowledge_document(project_id, document.id)
     except Exception as exc:
         if "UNIQUE constraint" in str(exc):
             raise HTTPException(status_code=409, detail="document already exists") from exc
         raise
-    return {"id": document.id, "status": "indexed"}
+    return {"id": document.id, "status": status}
+
+
+@app.post("/api/projects/{project_id}/knowledge/documents/{document_id}/retry")
+def retry_knowledge_document(project_id: str, document_id: str) -> dict[str, str]:
+    if not repository.knowledge_document(project_id, document_id):
+        raise HTTPException(status_code=404, detail="knowledge document not found")
+    return {"id": document_id, "status": index_knowledge_document(project_id, document_id)}
 
 
 @app.get("/api/projects/{project_id}/knowledge/documents", response_model=KnowledgeDocumentList)
@@ -179,3 +219,4 @@ def list_knowledge_documents(project_id: str) -> KnowledgeDocumentList:
 def delete_knowledge_document(project_id: str, document_id: str) -> None:
     if not repository.delete_knowledge_document(project_id, document_id):
         raise HTTPException(status_code=404, detail="knowledge document not found")
+    vector_index.delete_document(project_id, document_id)

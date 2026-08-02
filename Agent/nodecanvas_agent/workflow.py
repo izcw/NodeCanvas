@@ -53,10 +53,12 @@ class AgentWorkflow:
             if created_count
             else f"已定位并更新 {updated_count} 个已有节点。"
         )
+        knowledge_sources = list(dict.fromkeys(item.split("]", 1)[0].lstrip("[") for item in context.knowledge if item.startswith("[")))
+        knowledge_suffix = f"，参考：{'、'.join(knowledge_sources)}" if knowledge_sources else ""
         context_summary = (
             f"读取当前节点原文及 {len(context.direct_inputs)} 个直接上下文。"
             if context.current_node
-            else f"读取 {len(context.direct_inputs)} 个直接上下文，检索 {len(context.knowledge)} 条知识。"
+            else f"读取 {len(context.direct_inputs)} 个直接上下文，检索 {len(context.knowledge)} 条知识{knowledge_suffix}。"
         )
         candidate_summary = (
             "已生成并校验优化结果。"

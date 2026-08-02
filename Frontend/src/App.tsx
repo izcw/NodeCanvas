@@ -7,10 +7,10 @@ import { RightAssistant } from './components/layout/RightAssistant'
 import { getNodeGroups } from './features/canvas/graph'
 import { initialEdges, initialNodes } from './features/canvas/initialCanvas'
 import type { AgentRunOptions, CanvasEdge, CanvasNode, CanvasNodeData, KnowledgeItem, ModelConfig } from './types/canvas'
-import { createShareLink, deleteKnowledgeDocument, executeAgent, executeNodeChat, loadKnowledgeDocuments, loadProjectGraph, loadSharedGraph, saveProjectGraph, uploadKnowledgeDocument } from './lib/api'
+import { createShareLink, deleteKnowledgeDocument, executeAgent, executeNodeChat, loadKnowledgeDocuments, loadProjectGraph, loadSharedGraph, retryKnowledgeDocument, saveProjectGraph, uploadKnowledgeDocument } from './lib/api'
 import { ModelRegistryProvider, useModelRegistry } from './features/models/ModelRegistryContext'
 import { ModelManagerDialog } from './features/models/ModelManagerDialog'
-import { ProjectWorkspaceHome, ProjectWorkspaceProvider } from './features/workspace/ProjectWorkspace'
+import { DocumentTitle, ProjectWorkspaceHome, ProjectWorkspaceProvider } from './features/workspace/ProjectWorkspace'
 
 type CanvasSnapshot = { nodes: CanvasNode[]; edges: CanvasEdge[] }
 type PendingAgentModification = {
@@ -252,8 +252,8 @@ function Workspace() {
     const isText = file.type.startsWith('text/') || /\.(md|txt|json|csv|tsv|html?|xml)$/i.test(file.name)
     void (isText ? file.text() : Promise.resolve('')).then((content) =>
       uploadKnowledgeDocument({ id, name: file.name, kind, content }),
-    ).then(() => {
-      setKnowledge((current) => current.map((entry) => entry.id === id ? { ...entry, status: '已索引' } : entry))
+    ).then((result) => {
+      setKnowledge((current) => current.map((entry) => entry.id === id ? { ...entry, status: result.status === 'failed' ? '索引失败' : '已索引' } : entry))
     }).catch((error) => {
       console.warn('Failed to index knowledge document.', error)
       setKnowledge((current) => current.map((entry) => entry.id === id ? { ...entry, status: '索引失败' } : entry))
@@ -261,7 +261,6 @@ function Workspace() {
     event.target.value = ''
   }
   const removeKnowledge = (item: KnowledgeItem) => {
-    if (!window.confirm(`删除知识库文件“${item.name}”？此操作不会删除画布上的附件节点。`)) return
     const previous = knowledge
     setKnowledge((current) => current.filter((entry) => entry.id !== item.id))
     if (activeKnowledge?.id === item.id) setActiveKnowledge(null)
@@ -269,6 +268,12 @@ function Workspace() {
       console.warn('Failed to delete knowledge document.', error)
       setKnowledge(previous)
     })
+  }
+  const retryKnowledge = (item: KnowledgeItem) => {
+    setKnowledge((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: '索引中' } : entry))
+    void retryKnowledgeDocument(item.id).then((result) => {
+      setKnowledge((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: result.status === 'failed' ? '索引失败' : '已索引' } : entry))
+    }).catch(() => setKnowledge((current) => current.map((entry) => entry.id === item.id ? { ...entry, status: '索引失败' } : entry)))
   }
   const attachKnowledgeToCanvas = (item: KnowledgeItem) => {
     addCanvasNode('file', {
@@ -413,7 +418,7 @@ function Workspace() {
         recordTokenUsage(model, run.usage)
         const operatedNodeIds = new Set(run.operations.map((operation) => operation.node_id))
         setNodes(graph.nodes.map((node) => node.id === sourceId
-          ? { ...node, data: { ...node.data, agentStatus: 'completed', agentRunId: run.run_id, agentSummary: undefined } }
+          ? { ...node, data: { ...node.data, agentStatus: 'completed', agentRunId: run.run_id, agentSummary: run.summary } }
           : operatedNodeIds.has(node.id)
             ? { ...node, data: { ...node.data, generationStatus: 'settling', generationRunId: run.run_id } }
             : node))
@@ -482,11 +487,11 @@ function Workspace() {
       .catch((error) => console.warn('Failed to switch project knowledge base.', error))
   }, [setEdges, setNodes])
 
-  return <ProjectWorkspaceProvider onProjectChange={handleProjectChange}><ProjectWorkspaceHome hidden={readOnlyShare} /><main className={shellClassName}>
+  return <ProjectWorkspaceProvider onProjectChange={handleProjectChange}><DocumentTitle /><ProjectWorkspaceHome hidden={readOnlyShare} /><main className={shellClassName}>
     <input ref={imageInputRef} className="visually-hidden" type="file" accept="image/*" onChange={onImageSelected} />
     <input ref={fileInputRef} className="visually-hidden" type="file" onChange={onFileSelected} />
     <input ref={knowledgeInputRef} className="visually-hidden" type="file" onChange={onKnowledgeSelected} />
-    {!readOnlyShare && <LeftSidebar collapsed={leftCollapsed} tab={sidebarTab} groups={groups} nodes={nodes} knowledge={knowledge} onTabChange={setSidebarTab} onToggle={() => setLeftCollapsed((value) => !value)} onFocusGroup={focusGroup} onRenameNode={(id, title) => setNodes((current) => current.map((node) => node.id === id ? { ...node, data: { ...node.data, title } } : node))} onUploadKnowledge={chooseKnowledge} onSelectKnowledge={setActiveKnowledge} onAttachKnowledge={attachKnowledgeToCanvas} onDeleteKnowledge={removeKnowledge} onNewCanvas={() => { setNodes([]); setEdges([]); setActiveKnowledge(null); setSidebarTab('canvas') }} />}
+    {!readOnlyShare && <LeftSidebar collapsed={leftCollapsed} tab={sidebarTab} groups={groups} nodes={nodes} knowledge={knowledge} onTabChange={setSidebarTab} onToggle={() => setLeftCollapsed((value) => !value)} onFocusGroup={focusGroup} onRenameNode={(id, title) => setNodes((current) => current.map((node) => node.id === id ? { ...node, data: { ...node.data, title } } : node))} onUploadKnowledge={chooseKnowledge} onSelectKnowledge={setActiveKnowledge} onAttachKnowledge={attachKnowledgeToCanvas} onDeleteKnowledge={removeKnowledge} onRetryKnowledge={retryKnowledge} onNewCanvas={() => { setNodes([]); setEdges([]); setActiveKnowledge(null); setSidebarTab('canvas') }} />}
     <CanvasStage nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} setEdges={setEdges} onAddText={(position, onCreated) => addText('', position, onCreated)} onAddImage={chooseImage} onAddFile={chooseFile} onAddAgent={addAgent} onAddComment={addComment} onChatAnswer={editCurrentNode} onAgentRun={runAgentNode} canUndo={historyState.canUndo} canRedo={historyState.canRedo} onUndo={undo} onRedo={redo} onNodeDragStart={onNodeDragStart} onNodeDragStop={onNodeDragStop} knowledgePreview={activeKnowledge} onCloseKnowledgePreview={() => setActiveKnowledge(null)} leftCollapsed={leftCollapsed} agentCollapsed={agentCollapsed} onToggleLeft={() => setLeftCollapsed((value) => !value)} onToggleAgent={() => setAgentCollapsed((value) => !value)} readOnly={readOnlyShare} onCreateShareLink={shareCurrentCanvas} modificationTargetIds={pendingAgentModification?.selectedTargetIds} onToggleModificationTarget={toggleModificationTarget} />
     {!readOnlyShare && <RightAssistant collapsed={agentCollapsed} onToggle={() => setAgentCollapsed((value) => !value)} onCreateText={(content) => addText(content)} />}
     {pendingAgentModification && confirmationAnchor && <section className="agent-modification-popover" role="dialog" aria-label="确认 Agent 执行方式" style={{ left: confirmationAnchor.right, top: confirmationAnchor.top - 10 }}><span>将修改</span><div className="agent-modification-targets">{pendingAgentModification.targets.map((target) => <button key={target.id} className={pendingAgentModification.selectedTargetIds.includes(target.id) ? 'selected' : ''} onClick={() => toggleModificationTarget(target.id)}>@{target.title}</button>)}</div><small>点击节点名称可增加或取消修改；画布中的紫色高亮表示会被修改。</small><footer><button onClick={() => { setNodes((current) => current.map((node) => setModificationTargetClass(node, false))); setPendingAgentModification(null) }}>取消</button>{pendingAgentModification.selectedTargetIds.length === 0 ? <button className="agent-modification-create" onClick={() => { const pending = pendingAgentModification; setNodes((current) => current.map((node) => setModificationTargetClass(node, false))); setPendingAgentModification(null); runAgentNode(pending.sourceId, pending.prompt, pending.model, pending.options, 'create') }}>新生成</button> : <button className="agent-modification-confirm" onClick={() => { const pending = pendingAgentModification; const selectedIds = pending.selectedTargetIds; setNodes((current) => current.map((node) => setModificationTargetClass(node, false))); setPendingAgentModification(null); runAgentNode(pending.sourceId, pending.prompt, pending.model, { ...pending.options, targetNodeIds: selectedIds }, 'modify') }}>确认修改</button>}</footer></section>}

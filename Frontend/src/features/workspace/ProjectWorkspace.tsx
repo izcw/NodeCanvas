@@ -211,6 +211,14 @@ export function useProjectWorkspace() {
   return context
 }
 
+export function DocumentTitle() {
+  const { activeProject, workspaceOpen } = useProjectWorkspace()
+  useEffect(() => {
+    document.title = workspaceOpen ? '工作台 - 灵构 NodeCanvas' : `${activeProject.title} - 灵构 NodeCanvas`
+  }, [activeProject.title, workspaceOpen])
+  return null
+}
+
 export function ProjectMenu() {
   const { menuOpen, setMenuOpen, activeProject, openWorkspace, renameProject, createProject, deleteProject } = useProjectWorkspace()
   const menuRef = useRef<HTMLDivElement>(null)

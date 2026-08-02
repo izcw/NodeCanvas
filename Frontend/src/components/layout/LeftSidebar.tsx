@@ -1,6 +1,7 @@
-import { ArrowLeftToLine, BookOpen, ChevronDown, ChevronRight, Copy, FileText, FolderUp, Image as ImageIcon, Layers3, MoreHorizontal, Paperclip, Plus, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeftToLine, BookOpen, ChevronDown, ChevronRight, Copy, FileText, FolderUp, Image as ImageIcon, Layers3, MoreHorizontal, Paperclip, Plus, Trash2 } from 'lucide-react'
 import type { CanvasNode, KnowledgeItem } from '../../types/canvas'
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { NodeGroup } from '../../features/canvas/graph'
 import { BrandLogo } from '../BrandLogo'
 
@@ -19,11 +20,12 @@ type LeftSidebarProps = {
   onSelectKnowledge: (item: KnowledgeItem) => void
   onAttachKnowledge: (item: KnowledgeItem) => void
   onDeleteKnowledge: (item: KnowledgeItem) => void
+  onRetryKnowledge: (item: KnowledgeItem) => void
   onNewCanvas: () => void
   onRenameNode: (id: string, title: string) => void
 }
 
-export function LeftSidebar({ collapsed, tab, groups, nodes, knowledge, onTabChange, onToggle, onFocusGroup, onUploadKnowledge, onSelectKnowledge, onAttachKnowledge, onDeleteKnowledge, onNewCanvas, onRenameNode }: LeftSidebarProps) {
+export function LeftSidebar({ collapsed, tab, groups, nodes, knowledge, onTabChange, onToggle, onFocusGroup, onUploadKnowledge, onSelectKnowledge, onAttachKnowledge, onDeleteKnowledge, onRetryKnowledge, onNewCanvas, onRenameNode }: LeftSidebarProps) {
   const [canvases, setCanvases] = useState(['画布 1'])
   const [activeCanvas, setActiveCanvas] = useState('画布 1')
   const [canvasMenuOpen, setCanvasMenuOpen] = useState(false)
@@ -34,13 +36,32 @@ export function LeftSidebar({ collapsed, tab, groups, nodes, knowledge, onTabCha
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
   const [knowledgeQuery, setKnowledgeQuery] = useState('')
   const [knowledgeMenuId, setKnowledgeMenuId] = useState<string | null>(null)
+  const [pendingKnowledgeDeletion, setPendingKnowledgeDeletion] = useState<KnowledgeItem | null>(null)
   const switcherRef = useRef<HTMLDivElement>(null)
+  const knowledgeListRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!canvasMenuOpen) return
     const onPointerDown = (event: PointerEvent) => { if (!switcherRef.current?.contains(event.target as Node)) { setCanvasMenuOpen(false); setActionCanvas(null) } }
     document.addEventListener('pointerdown', onPointerDown)
     return () => document.removeEventListener('pointerdown', onPointerDown)
   }, [canvasMenuOpen])
+  useEffect(() => {
+    if (!knowledgeMenuId) return
+    const closeIfOutside = (event: Event) => {
+      if (!knowledgeListRef.current?.contains(event.target as Node)) setKnowledgeMenuId(null)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setKnowledgeMenuId(null)
+    }
+    document.addEventListener('pointerdown', closeIfOutside)
+    document.addEventListener('focusin', closeIfOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeIfOutside)
+      document.removeEventListener('focusin', closeIfOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [knowledgeMenuId])
   if (collapsed) {
     return <aside className="left-sidebar collapsed-hidden" />
   }
@@ -86,12 +107,27 @@ export function LeftSidebar({ collapsed, tab, groups, nodes, knowledge, onTabCha
           <p className="sidebar-hint">工作区内的 Agent 与画布均可引用</p>
           <button className="knowledge-upload" onClick={onUploadKnowledge}><FolderUp size={16} />上传共享文件</button>
           <input className="knowledge-search" value={knowledgeQuery} onChange={(event) => setKnowledgeQuery(event.target.value)} placeholder="搜索知识库文件" aria-label="搜索知识库文件" />
-          <div className="knowledge-list">
-            {filteredKnowledge.map((item) => <div key={item.id} className="knowledge-item"><button className="knowledge-item-main" onClick={() => onSelectKnowledge(item)}><span className="node-list-icon file"><FileText size={16} /></span><span><strong>{item.name}</strong><small>{item.kind} · {item.size} · {item.status ?? '已索引'}</small></span></button><button className="knowledge-item-more" onClick={() => setKnowledgeMenuId((id) => id === item.id ? null : item.id)} aria-label={`${item.name}操作`}><MoreHorizontal size={16} /></button>{knowledgeMenuId === item.id && <div className="knowledge-action-menu"><button onClick={() => { onAttachKnowledge(item); setKnowledgeMenuId(null) }}><Paperclip size={14} />添加到画布</button><button className="danger" onClick={() => { onDeleteKnowledge(item); setKnowledgeMenuId(null) }}><Trash2 size={14} />删除文件</button></div>}</div>)}
+          <div className="knowledge-list" ref={knowledgeListRef}>
+            {filteredKnowledge.map((item) => <div key={item.id} className="knowledge-item"><button className="knowledge-item-main" onClick={() => onSelectKnowledge(item)}><span className="node-list-icon file"><FileText size={16} /></span><span><strong title={item.name}>{item.name}</strong><small title={`${item.kind} · ${item.size} · ${item.status ?? '已索引'}`}>{item.kind} · {item.size} · {item.status ?? '已索引'}</small></span></button><button className="knowledge-item-more" onClick={() => setKnowledgeMenuId((id) => id === item.id ? null : item.id)} aria-label={`${item.name}操作`}><MoreHorizontal size={16} /></button>{knowledgeMenuId === item.id && <div className="knowledge-action-menu"><button onClick={() => { onAttachKnowledge(item); setKnowledgeMenuId(null) }}><Paperclip size={14} />添加到画布</button>{item.status === '索引失败' && <button onClick={() => { onRetryKnowledge(item); setKnowledgeMenuId(null) }}>重试索引</button>}<button className="danger" onClick={() => { setPendingKnowledgeDeletion(item); setKnowledgeMenuId(null) }}><Trash2 size={14} />删除文件</button></div>}</div>)}
             {filteredKnowledge.length === 0 && <p className="knowledge-empty">{knowledge.length ? '没有匹配的文件' : '上传文件后，Agent 即可检索引用。'}</p>}
           </div>
         </section>
       )}
+      {pendingKnowledgeDeletion && <KnowledgeDeleteDialog item={pendingKnowledgeDeletion} onCancel={() => setPendingKnowledgeDeletion(null)} onConfirm={() => { onDeleteKnowledge(pendingKnowledgeDeletion); setPendingKnowledgeDeletion(null) }} />}
     </aside>
+  )
+}
+
+function KnowledgeDeleteDialog({ item, onCancel, onConfirm }: { item: KnowledgeItem; onCancel: () => void; onConfirm: () => void }) {
+  return createPortal(
+    <div className="model-manager-overlay project-delete-overlay" onMouseDown={onCancel}>
+      <section className="project-delete-dialog" role="dialog" aria-modal="true" aria-label="确认删除知识库文件" onMouseDown={(event) => event.stopPropagation()}>
+        <span className="project-delete-icon"><AlertTriangle size={22} /></span>
+        <h2>删除知识库文件？</h2>
+        <p>“{item.name}”及其检索索引将被永久删除，无法恢复；画布上的附件节点不会被删除。</p>
+        <footer><button onClick={onCancel}>取消</button><button className="danger" onClick={onConfirm}>确认删除</button></footer>
+      </section>
+    </div>,
+    document.body,
   )
 }

@@ -186,7 +186,11 @@ export function uploadKnowledgeDocument(
   })
 }
 
-type KnowledgeDocumentResponse = { id: string; name: string; kind: string; size: number; created_at: string }
+export function retryKnowledgeDocument(documentId: string, projectId = currentProjectId()) {
+  return apiRequest<{ id: string; status: string }>(`/api/projects/${projectId}/knowledge/documents/${documentId}/retry`, { method: 'POST' })
+}
+
+type KnowledgeDocumentResponse = { id: string; name: string; kind: string; size: number; created_at: string; status: 'indexed' | 'indexing' | 'failed' }
 
 function formatKnowledgeSize(size: number) {
   if (size < 1024) return `${Math.max(1, size)} 字符`
@@ -201,7 +205,7 @@ export async function loadKnowledgeDocuments(projectId = currentProjectId()): Pr
     kind: item.kind,
     size: formatKnowledgeSize(item.size),
     createdAt: item.created_at,
-    status: '已索引',
+    status: item.status === 'failed' ? '索引失败' : item.status === 'indexing' ? '索引中' : '已索引',
   }))
 }
 

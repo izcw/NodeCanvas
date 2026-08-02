@@ -2044,10 +2044,8 @@ textarea:focus-visible {
 .node-title:focus { color: #fff; }
 
 .node-context-menu {
-  position: absolute;
-  z-index: 60;
-  top: 34px;
-  right: 10px;
+  position: fixed;
+  z-index: 32000;
   display: flex;
   width: 170px;
   flex-direction: column;
@@ -2058,6 +2056,7 @@ textarea:focus-visible {
   background: rgba(34, 36, 40, 0.98);
   box-shadow: 0 18px 46px rgba(0, 0, 0, 0.52);
 }
+.node-context-menu:focus { outline: none; }
 .node-context-menu button { display: flex; align-items: center; gap: 8px; padding: 8px; border: 0; border-radius: 8px; color: #d5d9dd; background: transparent; text-align: left; cursor: pointer; font-size: 11px; }
 .node-context-menu button:hover { background: #2d3137; }
 .node-context-menu span { height: 1px; margin: 4px 2px; background: #3b3f46; }
@@ -2432,6 +2431,11 @@ textarea:focus-visible {
   padding: 0 12px;
 }
 
+/* The action menu is intentionally allowed to extend below its scrollable list. */
+.left-sidebar > .sidebar-content.knowledge-panel {
+  overflow: visible;
+}
+
 .knowledge-panel .sidebar-section-title {
   padding: 0 4px;
 }
@@ -2510,7 +2514,7 @@ textarea:focus-visible {
 
 .knowledge-item .node-list-icon.file { width: 30px; height: 30px; border: 1px solid #5f6872; border-radius: 9px; color: #d9b16b; background: rgba(181, 136, 60, .14); }
 
-.knowledge-item > span:last-child {
+.knowledge-item-main > span:last-child {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -3096,8 +3100,7 @@ textarea:focus-visible {
 }
 
 .node-context-menu {
-  top: 46px;
-  right: 10px;
+  transform: none;
 }
 
 .node-context-menu .node-menu-divider {
@@ -3106,6 +3109,22 @@ textarea:focus-visible {
   margin: 4px 2px;
   background: #3b3f46;
 }
+
+.node-fullscreen-preview { position: fixed; z-index: 33000; inset: 0; display: grid; place-items: center; padding: 32px; background: rgba(5, 7, 10, .82); backdrop-filter: blur(10px); }
+.node-fullscreen-preview > section { display: flex; width: min(1120px, 100%); height: min(760px, 100%); min-height: 0; flex-direction: column; overflow: hidden; border: 1px solid #3e454f; border-radius: 20px; color: #e8ecf0; background: #15181d; box-shadow: 0 36px 110px rgba(0, 0, 0, .65); }
+.node-fullscreen-preview header { display: flex; min-height: 76px; align-items: center; justify-content: space-between; gap: 20px; padding: 14px 20px; border-bottom: 1px solid #303741; }
+.node-fullscreen-preview header span { color: #88929d; font-size: 11px; }
+.node-fullscreen-preview h2 { margin: 4px 0 0; overflow: hidden; font-size: 17px; text-overflow: ellipsis; white-space: nowrap; }
+.node-fullscreen-preview header button { height: 34px; padding: 0 12px; border: 1px solid #404954; border-radius: 9px; color: #d5dce3; background: #242a31; cursor: pointer; }
+.node-fullscreen-preview header button:hover { color: #fff; background: #303842; }
+.node-fullscreen-preview main { display: grid; min-height: 0; flex: 1; place-items: center; overflow: auto; padding: 30px; }
+.node-fullscreen-preview main > img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.node-fullscreen-preview main > article { width: min(860px, 100%); white-space: pre-wrap; color: #d8dde3; font-size: 15px; line-height: 1.8; }
+.node-preview-file { display: flex; width: min(520px, 100%); align-items: center; flex-direction: column; gap: 10px; padding: 42px; border: 1px solid #39424c; border-radius: 16px; color: #abb5bf; background: #1d2229; text-align: center; }
+.node-preview-file svg { color: #e0b96f; }
+.node-preview-file strong { color: #edf1f5; font-size: 16px; }
+.node-preview-file span { color: #7f8a96; font-size: 12px; }
+.node-preview-file p { margin: 8px 0 0; white-space: pre-wrap; color: #aeb8c2; font-size: 13px; line-height: 1.65; }
 
 /* Agent nodes share the same composer as node-level chat, but live inside the card. */
 .canvas-node--agent .node-card {

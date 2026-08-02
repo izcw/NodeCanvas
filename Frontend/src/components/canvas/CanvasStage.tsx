@@ -83,6 +83,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   const [highlightedSearchIndex, setHighlightedSearchIndex] = useState(0)
   const [viewMode, setViewMode] = useState<'workflow' | 'storyboard'>('workflow')
   const [presentationMode, setPresentationMode] = useState(false)
+  const stageRef = useRef<HTMLElement>(null)
   const [selectionDragPosition, setSelectionDragPosition] = useState<XYPosition | null>(null)
   const [canvasPanning, setCanvasPanning] = useState(false)
   const [selectionGenerateMenu, setSelectionGenerateMenu] = useState<Omit<MenuState, 'mode'> | null>(null)
@@ -208,10 +209,37 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     setMenu(null)
     setSearchOpen(false)
     setShareOpen(false)
-    const onEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); setPresentationMode(false) } }
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)
+      setPresentationMode(false)
+    }
     window.addEventListener('keydown', onEscape)
     return () => window.removeEventListener('keydown', onEscape)
   }, [presentationMode])
+  useEffect(() => {
+    const syncFullscreenState = () => setPresentationMode(document.fullscreenElement === stageRef.current)
+    document.addEventListener('fullscreenchange', syncFullscreenState)
+    return () => document.removeEventListener('fullscreenchange', syncFullscreenState)
+  }, [])
+  const togglePresentation = useCallback(async () => {
+    const stage = stageRef.current
+    if (!stage) return
+    if (document.fullscreenElement) {
+      await document.exitFullscreen().catch(() => undefined)
+      setPresentationMode(false)
+      return
+    }
+    setPresentationMode(true)
+    if (!stage.requestFullscreen) return
+    try {
+      await stage.requestFullscreen()
+    } catch {
+      // The visual presentation mode remains a useful fallback where the
+      // browser declines programmatic fullscreen requests.
+    }
+  }, [])
   useEffect(() => {
     if (!leftCollapsed) return
     const bar = document.querySelector('.collapsed-workspace-bar .brand-logo')
@@ -596,11 +624,21 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     setSelectionGenerateMenu(null)
   }
 
-  return <section className={`canvas-stage ${commentMode ? 'comment-mode' : ''} ${presentationMode ? 'presentation-mode' : ''} ${readOnly ? 'read-only-share' : ''} ${knowledgePreview ? 'has-knowledge-preview' : ''} ${selectionDragPosition ? 'selection-connecting' : ''} ${canvasPanning ? 'is-canvas-panning' : ''}`} onMouseDownCapture={onStageMouseDownCapture} onMouseMoveCapture={onStageMouseMoveCapture} onMouseUpCapture={onStageMouseUpCapture} onDoubleClickCapture={openMenuAtCursor} onContextMenuCapture={(event) => { event.preventDefault(); if (interactionLocked) event.stopPropagation() }}>
+  return <section ref={stageRef} className={`canvas-stage ${commentMode ? 'comment-mode' : ''} ${presentationMode ? 'presentation-mode' : ''} ${readOnly ? 'read-only-share' : ''} ${knowledgePreview ? 'has-knowledge-preview' : ''} ${selectionDragPosition ? 'selection-connecting' : ''} ${canvasPanning ? 'is-canvas-panning' : ''}`} onMouseDownCapture={onStageMouseDownCapture} onMouseMoveCapture={onStageMouseMoveCapture} onMouseUpCapture={onStageMouseUpCapture} onDoubleClickCapture={openMenuAtCursor} onContextMenuCapture={(event) => {
+    if (interactionLocked) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    // Let a node's own handler open its custom context menu. Only the blank
+    // canvas needs the stage-level native-menu suppression.
+    if ((event.target as Element).closest('.react-flow__node')) return
+    event.preventDefault()
+  }}>
     <ReactFlow nodes={flowNodes} edges={flowEdges} nodeTypes={canvasNodeTypes} edgeTypes={edgeTypes} connectionMode={ConnectionMode.Loose} defaultViewport={storedViewportRef.current ?? { x: 0, y: 0, zoom: 1 }} noPanClassName="canvas-pan-never-block" onInit={restoreStoredViewport} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onSelectionStart={onSelectionStart} onSelectionEnd={onSelectionEnd} onNodeClick={(_, node) => { if (suppressNodeClickRef.current) { suppressNodeClickRef.current = false; return } if (modificationTargetIds) { onToggleModificationTarget?.(node.id); return } if (!nodeInteractionsLocked) setFocusedNodeId(node.id) }} onNodeDragStart={onNodeDragStart} onNodeDragStop={onNodeDragStop} onConnect={onConnect} onConnectStart={onConnectStart} onConnectEnd={onConnectEnd} isValidConnection={isValidConnection} onEdgeClick={(_, edge) => { if (!nodeInteractionsLocked) setEdges((current) => current.map((item) => ({ ...item, selected: item.id === edge.id }))) }} onNodeDoubleClick={(_, node) => { if (!nodeInteractionsLocked && !commentMode && node.type !== 'agent') { closeMenu(); setActiveNodeId(node.id) } }} onPaneClick={(event) => { if (nodeInteractionsLocked) return; if (commentMode) onAddComment(screenToFlowPosition({ x: event.clientX, y: event.clientY })); else { setActiveNodeId(null); setFocusedNodeId(null); setEdges((current) => current.map((item) => ({ ...item, selected: false }))) } }} onMoveStart={onMoveStart} onMove={onMove} onMoveEnd={onMoveEnd} fitView zoomOnDoubleClick={false} zoomOnScroll={false} panOnScroll panOnScrollSpeed={1.5} zoomOnPinch minZoom={0.2} maxZoom={2} connectionRadius={110} snapToGrid={snapToGrid} snapGrid={[20, 20]} nodesConnectable={!commentMode && !nodeInteractionsLocked} nodesDraggable={!nodeInteractionsLocked} elementsSelectable={!nodeInteractionsLocked} panOnDrag={[2]} selectionOnDrag={!nodeInteractionsLocked} selectionMode={SelectionMode.Partial} defaultEdgeOptions={{ style: { stroke: '#73869a', strokeWidth: 2.5 } }} deleteKeyCode={nodeInteractionsLocked ? null : ['Backspace', 'Delete']} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" proOptions={{ hideAttribution: true }} aria-label="节点式创意策划画布">
       <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color="#70747a" />
       {showMiniMap && <MiniMap position="bottom-left" className="canvas-minimap" pannable zoomable onClick={(_, point) => { void setCenter(point.x, point.y, { zoom: zoom / 100, duration: 260 }) }} nodeColor={(node) => node.type === 'image' ? '#426e7a' : node.type === 'file' ? '#756347' : '#5b526f'} maskColor="rgba(8, 9, 11, 0.72)" />}
-      <CanvasTopbar readOnly={readOnly} viewMode={viewMode} onViewModeChange={setViewMode} onShare={() => setShareOpen((value) => !value)} shareOpen={shareOpen} shareMessage={shareMessage} onCopyShareLink={() => void copyReadOnlyLink()} onDownloadImage={() => void downloadCanvasImage()} onSearch={() => setSearchOpen(true)} presentationMode={presentationMode} onTogglePresentation={() => setPresentationMode((value) => !value)} leftCollapsed={leftCollapsed} agentCollapsed={agentCollapsed} onToggleAgent={onToggleAgent} />
+      <CanvasTopbar readOnly={readOnly} viewMode={viewMode} onViewModeChange={setViewMode} onShare={() => setShareOpen((value) => !value)} shareOpen={shareOpen} shareMessage={shareMessage} onCopyShareLink={() => void copyReadOnlyLink()} onDownloadImage={() => void downloadCanvasImage()} onSearch={() => setSearchOpen(true)} presentationMode={presentationMode} onTogglePresentation={() => void togglePresentation()} leftCollapsed={leftCollapsed} agentCollapsed={agentCollapsed} onToggleAgent={onToggleAgent} />
       {!readOnly && <CanvasDock onAdd={() => setMenu({ mode: 'add' })} commentMode={commentMode} onToggleComment={() => { setCommentMode((value) => !value); setActiveNodeId(null) }} canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} />}
       <ViewportControls readOnly={readOnly} zoom={zoom} miniMapVisible={showMiniMap} snapToGrid={snapToGrid} hideEdges={hideEdges} onChangeZoom={changeZoom} onToggleMiniMap={() => setShowMiniMap((value) => !value)} onToggleSnap={() => setSnapToGrid((value) => !value)} onToggleEdges={() => setHideEdges((value) => !value)} onReset={() => void fitView({ duration: 180, padding: 0.22 })} />
       {!modificationTargetIds && selectedNodes.length > 1 && <NodeToolbar nodeId={selectedNodeIds} position={Position.Top} align="center" isVisible className="selection-toolbar"><button aria-label="打组"><FolderPlus size={16} /><span>打组</span></button><span className="selection-toolbar-divider" /><button aria-label="宫格排列" title="宫格排列" onClick={() => arrangeSelectedNodes('grid')}><Grid2X2 size={16} /><span>宫格</span></button><button aria-label="水平排列" title="水平排列" onClick={() => arrangeSelectedNodes('horizontal')}><AlignHorizontalSpaceAround size={16} /><span>水平</span></button><button aria-label="垂直排列" title="垂直排列" onClick={() => arrangeSelectedNodes('vertical')}><AlignVerticalSpaceAround size={16} /><span>垂直</span></button><button aria-label="创建副本" title="创建副本" onClick={duplicateSelectedNodes}><Copy size={16} /><span>副本</span></button><span className="selection-toolbar-divider" /><button className="selection-delete-button" aria-label="删除选中节点" title="删除选中节点" onClick={() => void deleteElements({ nodes: selectedNodeIds.map((id) => ({ id })) })}><Trash2 size={16} /><span>删除</span></button></NodeToolbar>}

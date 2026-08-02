@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
 } from 'react'
+import { createPortal } from 'react-dom'
 import {
   Handle,
   NodeResizer,
@@ -26,6 +27,7 @@ import {
   File,
   FileText,
   Image as ImageIcon,
+  Maximize2,
   MessageSquareText,
   Paperclip,
   Pencil,
@@ -83,12 +85,18 @@ function NodeHandles({ id }: { id: string }) {
 function NodeContextMenu({
   id,
   isImage,
+  position,
+  anchorRef,
   onClose,
+  onPreview,
   onReplaceImage,
 }: {
   id: string
   isImage: boolean
+  position: { x: number; y: number }
+  anchorRef: { current: HTMLElement | null }
   onClose: () => void
+  onPreview: () => void
   onReplaceImage: () => void
 }) {
   const { deleteElements, fitView, getNode, getNodes, setNodes } = useReactFlow()
@@ -96,7 +104,8 @@ function NodeContextMenu({
 
   useEffect(() => {
     const closeOnPointerDown = (event: PointerEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) onClose()
+      const target = event.target as Node
+      if (!menuRef.current?.contains(target) && !anchorRef.current?.contains(target)) onClose()
     }
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onClose()
@@ -125,12 +134,13 @@ function NodeContextMenu({
     onClose()
   }
 
-  return (
+  return createPortal(
     <div
       ref={menuRef}
       role="menu"
       tabIndex={-1}
       className="node-context-menu nodrag"
+      style={{ left: position.x, top: position.y }}
       onPointerDown={(event) => event.stopPropagation()}
     >
       {isImage && (
@@ -148,6 +158,10 @@ function NodeContextMenu({
       >
         <Expand size={15} />
         聚焦查看
+      </button>
+      <button role="menuitem" onClick={onPreview}>
+        <Maximize2 size={15} />
+        全屏预览
       </button>
       <button role="menuitem" onClick={duplicate}>
         <Copy size={15} />
@@ -177,7 +191,8 @@ function NodeContextMenu({
         <Trash2 size={15} />
         删除节点
       </button>
-    </div>
+    </div>,
+    document.body,
   )
 }
 
@@ -195,7 +210,68 @@ function NodeFrame({
 }: NodeFrameProps) {
   const { getNode, getNodes, setNodes } = useReactFlow()
   const [menuOpen, setMenuOpen] = useState(false)
+  const [previewOpen, setPreviewOpen] = useState(false)
+  const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
+  const frameRef = useRef<HTMLElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
+
+  const getMenuPosition = () => {
+    const frame = frameRef.current
+    if (!frame) return menuPosition
+    const bounds = frame.getBoundingClientRect()
+    const menuWidth = 190
+    const menuHeight = 220
+    // Keep the menu anchored inside the node instead of floating beside it.
+    const innerX = bounds.left + 12
+    const innerY = bounds.top + 12
+    return {
+      x: Math.min(Math.max(8, innerX), Math.max(8, window.innerWidth - menuWidth - 8)),
+      y: Math.min(Math.max(8, innerY), Math.max(8, window.innerHeight - menuHeight - 8)),
+    }
+  }
+
+  useEffect(() => {
+    const frame = frameRef.current
+    if (!frame) return
+    const openMenuAtEvent = (event: MouseEvent | PointerEvent) => {
+      if (!(event.target instanceof Node) || !frame.contains(event.target)) return
+      event.preventDefault()
+      event.stopPropagation()
+      window.dispatchEvent(new CustomEvent('nodecanvas:close-node-context-menus', { detail: { exceptId: id } }))
+      setMenuPosition(getMenuPosition())
+      setMenuOpen(true)
+    }
+    const openContextMenu = (event: MouseEvent) => openMenuAtEvent(event)
+    const openOnRightPointerDown = (event: PointerEvent) => {
+      if (event.button === 2) openMenuAtEvent(event)
+    }
+    // React Flow owns the node event layer. Capture on document so the custom
+    // menu wins before React Flow can consume the browser contextmenu event.
+    document.addEventListener('contextmenu', openContextMenu, true)
+    document.addEventListener('pointerdown', openOnRightPointerDown, true)
+    return () => {
+      document.removeEventListener('contextmenu', openContextMenu, true)
+      document.removeEventListener('pointerdown', openOnRightPointerDown, true)
+    }
+  }, [id])
+  useEffect(() => {
+    if (!menuOpen) return
+    let animationFrame = 0
+    const syncMenuPosition = () => {
+      const next = getMenuPosition()
+      setMenuPosition((current) => current.x === next.x && current.y === next.y ? current : next)
+      animationFrame = window.requestAnimationFrame(syncMenuPosition)
+    }
+    animationFrame = window.requestAnimationFrame(syncMenuPosition)
+    return () => window.cancelAnimationFrame(animationFrame)
+  }, [menuOpen])
+  useEffect(() => {
+    const closeOtherMenus = (event: Event) => {
+      if ((event as CustomEvent<{ exceptId: string }>).detail.exceptId !== id) setMenuOpen(false)
+    }
+    window.addEventListener('nodecanvas:close-node-context-menus', closeOtherMenus)
+    return () => window.removeEventListener('nodecanvas:close-node-context-menus', closeOtherMenus)
+  }, [id])
 
   const replaceImage = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -224,12 +300,8 @@ function NodeFrame({
 
   return (
     <article
+      ref={frameRef}
       className={`canvas-node canvas-node--${kind} ${selected ? 'is-selected' : ''}`}
-      onContextMenu={(event) => {
-        event.preventDefault()
-        event.stopPropagation()
-        setMenuOpen(true)
-      }}
     >
       <input
         ref={imageInputRef}
@@ -256,11 +328,36 @@ function NodeFrame({
         <NodeContextMenu
           id={id}
           isImage={getNode(id)?.type === 'image'}
+          position={menuPosition}
+          anchorRef={frameRef}
           onClose={() => setMenuOpen(false)}
+          onPreview={() => { setMenuOpen(false); setPreviewOpen(true) }}
           onReplaceImage={() => imageInputRef.current?.click()}
         />
       )}
+      {previewOpen && <NodeFullscreenPreview node={getNode(id) as CanvasNode | undefined} onClose={() => setPreviewOpen(false)} />}
     </article>
+  )
+}
+
+function NodeFullscreenPreview({ node, onClose }: { node?: CanvasNode; onClose: () => void }) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [onClose])
+  if (!node) return null
+  const { data } = node
+  return createPortal(
+    <div className="node-fullscreen-preview" role="dialog" aria-modal="true" aria-label={`${data.title} 全屏预览`} onMouseDown={onClose}>
+      <section onMouseDown={(event) => event.stopPropagation()}>
+        <header><div><span>{node.type === 'image' ? '图片节点' : node.type === 'file' ? '附件节点' : node.type === 'agent' ? 'Agent 节点' : '文本节点'}</span><h2>{data.title || '未命名节点'}</h2></div><button onClick={onClose} aria-label="关闭全屏预览">关闭</button></header>
+        <main>
+          {node.type === 'image' && data.imageUrl ? <img src={data.imageUrl} alt={data.title || '节点图片'} /> : node.type === 'file' ? <div className="node-preview-file"><File size={32} /><strong>{data.fileName || data.title}</strong><span>{data.fileKind || 'FILE'} · {data.fileSize || '未知大小'}</span><p>{data.content || '该附件没有可预览的文本内容。'}</p></div> : <article>{data.content || '暂无内容'}</article>}
+        </main>
+      </section>
+    </div>,
+    document.body,
   )
 }
 

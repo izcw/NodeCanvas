@@ -4,7 +4,7 @@ FastAPI 服务已实现以下主链路：
 
 - SQLite 持久化项目画布快照与 revision
 - Agent Run、Context Snapshot 和结果记录
-- 文本知识文档分块与项目内关键词检索
+- 文本知识文档分块与项目内关键词检索；配置 PostgreSQL + pgvector 后切换为向量检索
 - LangGraph Agent 执行 API 与结果图持久化
 - 临时模型连通性测试（凭据不入库）
 - 本地开发 CORS、健康检查和 OpenAPI 文档
@@ -57,5 +57,13 @@ Backend/.venv/bin/python -m pytest Backend/tests -q
 ```
 
 SQLite 数据默认保存在 `Backend/data/nodecanvas.db`，该目录不会提交到 Git。
+
+## pgvector 语义检索
+
+项目画布与执行记录继续由 SQLite 事务化保存；知识分块会同步到 PostgreSQL 的 `nodecanvas_knowledge_vectors` 作为可重建的 pgvector 索引。配置 `.env.example` 中的 `NODECANVAS_PGVECTOR_DATABASE_URL` 后，服务启动会创建 `vector` 扩展、回填已有分块，并在每次知识文档新增/删除时同步索引。
+
+设置 OpenAI-compatible embeddings 地址、密钥和模型后会调用真实 Embeddings API；未设置时使用确定性本地 hash embedding，仅用于离线开发与测试，不应用于生产检索质量评估。
+
+若已安装 Docker，可运行 `docker compose -f Backend/compose.pgvector.yml up -d` 启动本地 pgvector，再设置 `NODECANVAS_PGVECTOR_DATABASE_URL=postgresql://nodecanvas:nodecanvas@127.0.0.1:5432/nodecanvas`。知识库会显示索引状态；失败后可在界面中重试，服务启动也会自动回填索引。
 
 LangGraph 正式版要求 Python 3.10+；本仓库本地基线采用 Python 3.12。

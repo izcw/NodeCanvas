@@ -61,6 +61,9 @@ class SQLiteRepository:
                     name TEXT NOT NULL,
                     kind TEXT NOT NULL,
                     content TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'indexed',
+                    index_error TEXT,
+                    indexed_at TEXT,
                     created_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS knowledge_chunks (
@@ -83,6 +86,13 @@ class SQLiteRepository:
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(projects)").fetchall()}
             if "cover_url" not in columns:
                 connection.execute("ALTER TABLE projects ADD COLUMN cover_url TEXT")
+            knowledge_columns = {row["name"] for row in connection.execute("PRAGMA table_info(knowledge_documents)").fetchall()}
+            if "status" not in knowledge_columns:
+                connection.execute("ALTER TABLE knowledge_documents ADD COLUMN status TEXT NOT NULL DEFAULT 'indexed'")
+            if "index_error" not in knowledge_columns:
+                connection.execute("ALTER TABLE knowledge_documents ADD COLUMN index_error TEXT")
+            if "indexed_at" not in knowledge_columns:
+                connection.execute("ALTER TABLE knowledge_documents ADD COLUMN indexed_at TEXT")
 
     def ensure_project(self, project_id: str, title: str = "NodeCanvas 项目") -> None:
         now = utc_now()
@@ -262,13 +272,13 @@ class SQLiteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def add_knowledge_document(self, project_id: str, document_id: str, name: str, kind: str, content: str) -> None:
+    def add_knowledge_document(self, project_id: str, document_id: str, name: str, kind: str, content: str, status: str = "indexed") -> None:
         self.ensure_project(project_id)
         chunks = chunk_text(content)
         with self.connect() as connection:
             connection.execute(
-                "INSERT INTO knowledge_documents (id, project_id, name, kind, content, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (document_id, project_id, name, kind, content, utc_now()),
+                "INSERT INTO knowledge_documents (id, project_id, name, kind, content, status, indexed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (document_id, project_id, name, kind, content, status, utc_now() if status == "indexed" else None, utc_now()),
             )
             connection.executemany(
                 "INSERT INTO knowledge_chunks (document_id, ordinal, content) VALUES (?, ?, ?)",
@@ -278,10 +288,52 @@ class SQLiteRepository:
     def list_knowledge_documents(self, project_id: str) -> list[dict[str, Any]]:
         with self.connect() as connection:
             rows = connection.execute(
-                "SELECT id, name, kind, length(content) AS size, created_at FROM knowledge_documents WHERE project_id = ? ORDER BY created_at DESC",
+                "SELECT id, name, kind, length(content) AS size, status, created_at FROM knowledge_documents WHERE project_id = ? ORDER BY created_at DESC",
                 (project_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def knowledge_document(self, project_id: str, document_id: str) -> dict[str, Any] | None:
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT id, name, kind, content, status FROM knowledge_documents WHERE project_id = ? AND id = ?",
+                (project_id, document_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def set_knowledge_index_status(self, project_id: str, document_id: str, status: str, error: str | None = None) -> None:
+        with self.connect() as connection:
+            connection.execute(
+                "UPDATE knowledge_documents SET status = ?, index_error = ?, indexed_at = ? WHERE project_id = ? AND id = ?",
+                (status, error, utc_now() if status == "indexed" else None, project_id, document_id),
+            )
+
+    def knowledge_chunks(self, project_id: str, document_id: str) -> list[str]:
+        """Return canonical chunks so a derived vector index can be rebuilt."""
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT kc.content FROM knowledge_chunks kc
+                JOIN knowledge_documents kd ON kd.id = kc.document_id
+                WHERE kd.project_id = ? AND kd.id = ? ORDER BY kc.ordinal
+                """,
+                (project_id, document_id),
+            ).fetchall()
+        return [row["content"] for row in rows]
+
+    def all_knowledge_chunks(self) -> list[tuple[str, str, list[str]]]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT kd.project_id, kc.document_id, kc.ordinal, kc.content
+                FROM knowledge_chunks kc JOIN knowledge_documents kd ON kd.id = kc.document_id
+                ORDER BY kd.project_id, kc.document_id, kc.ordinal
+                """
+            ).fetchall()
+        grouped: dict[tuple[str, str], list[str]] = {}
+        for row in rows:
+            grouped.setdefault((row["project_id"], row["document_id"]), []).append(row["content"])
+        return [(project_id, document_id, chunks) for (project_id, document_id), chunks in grouped.items()]
 
     def delete_knowledge_document(self, project_id: str, document_id: str) -> bool:
         """Remove a document and its indexed chunks (via the FK cascade)."""
@@ -296,7 +348,7 @@ class SQLiteRepository:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT kc.content
+                SELECT kd.name, kc.content
                 FROM knowledge_chunks kc
                 JOIN knowledge_documents kd ON kd.id = kc.document_id
                 WHERE kd.project_id = ?
@@ -311,9 +363,9 @@ class SQLiteRepository:
             lowered = content.lower()
             score = sum(lowered.count(term) for term in terms)
             if score or not terms:
-                scored.append((score, content))
+                scored.append((score, row["name"], content))
         scored.sort(key=lambda item: item[0], reverse=True)
-        return [content for _, content in scored[:limit]]
+        return [f"[{name}] {content}" for _, name, content in scored[:limit]]
 
 
 def chunk_text(content: str, chunk_size: int = 900, overlap: int = 120) -> list[str]:

@@ -85,6 +85,18 @@ def test_knowledge_document_can_be_listed_and_deleted(tmp_path: Path) -> None:
         assert client.get("/api/projects/test/knowledge/documents").json()["items"] == []
 
 
+def test_knowledge_document_can_be_reindexed(tmp_path: Path) -> None:
+    main.repository = SQLiteRepository(tmp_path / "knowledge-retry.db")
+    with TestClient(main.app) as client:
+        created = client.post("/api/projects/test/knowledge/documents", json={
+            "id": "brief", "name": "brief.md", "kind": "MD", "content": "磁轴键盘需要低延迟响应。",
+        })
+        assert created.status_code == 201, created.text
+        retried = client.post("/api/projects/test/knowledge/documents/brief/retry")
+        assert retried.status_code == 200, retried.text
+        assert retried.json() == {"id": "brief", "status": "indexed"}
+
+
 def test_project_directory_lists_existing_and_new_projects(tmp_path: Path) -> None:
     main.repository = SQLiteRepository(tmp_path / "projects.db")
     with TestClient(main.app) as client:
