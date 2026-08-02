@@ -7,3 +7,10 @@ frontend/dist/
 frontend/*.tsbuildinfo
 frontend/vite.config.js
 frontend/vite.config.d.ts
+
+# Backend runtime state
+Backend/.venv/
+Backend/data/
+Backend/.pytest_cache/
+**/__pycache__/
+*.pyc

@@ -13,37 +13,19 @@ import {
   X,
 } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState } from "react";
-import type { CanvasNode } from "../../types/canvas";
+import type { AgentRunOptions, CanvasNode, ModelConfig } from "../../types/canvas";
 import { NodeSelect } from "./NodeSelect";
+import { useModelRegistry } from "../../features/models/ModelRegistryContext";
 
 type NodeChatComposerProps = {
   nodeTitle: string;
   onClose?: () => void;
-  onSend: (prompt: string, model: string) => void;
+  onSend: (prompt: string, model: ModelConfig, options: AgentRunOptions) => void | Promise<void | string[]>;
   nodes: CanvasNode[];
   mode?: "node" | "agent";
+  runStatus?: 'idle' | 'running' | 'completed' | 'failed';
+  runSummary?: string[];
 };
-
-const models = [
-  {
-    name: "Kimi K2",
-    description: "长上下文，适合复杂创作",
-    duration: "12s",
-    icon: "sparkles",
-  },
-  {
-    name: "Qwen Max",
-    description: "均衡可靠，擅长中文表达",
-    duration: "8s",
-    icon: "bot",
-  },
-  {
-    name: "DeepSeek V3",
-    description: "推理清晰，适合结构化任务",
-    duration: "10s",
-    icon: "brain",
-  },
-] as const;
 
 export function NodeChatComposer({
   nodeTitle,
@@ -51,9 +33,12 @@ export function NodeChatComposer({
   onSend,
   nodes,
   mode = "node",
+  runStatus = 'idle',
+  runSummary = [],
 }: NodeChatComposerProps) {
+  const { models } = useModelRegistry();
   const [prompt, setPrompt] = useState("");
-  const [model, setModel] = useState("Kimi K2");
+  const [modelId, setModelId] = useState(models[0]?.id ?? "");
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
@@ -62,8 +47,11 @@ export function NodeChatComposer({
   const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
   const [generationType, setGenerationType] = useState("文本");
   const [generationMenuOpen, setGenerationMenuOpen] = useState(false);
-  const [cardCount, setCardCount] = useState(1);
   const [cardMenuOpen, setCardMenuOpen] = useState(false);
+  const [resultGrid, setResultGrid] = useState({ rows: 1, columns: 1 });
+  const [hoveredGrid, setHoveredGrid] = useState({ rows: 1, columns: 1 });
+  const [localRunStatus, setLocalRunStatus] = useState<'idle' | 'running' | 'completed' | 'failed'>('idle');
+  const [localSummary, setLocalSummary] = useState<string[]>([]);
   const generationPickerRef = useRef<HTMLDivElement>(null);
   const cardCountPickerRef = useRef<HTMLDivElement>(null);
   const pendingCaretRef = useRef<number | null>(null);
@@ -71,6 +59,14 @@ export function NodeChatComposer({
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const inputWrapRef = useRef<HTMLDivElement>(null);
   const isAgent = mode === "agent";
+  const effectiveRunStatus = isAgent ? runStatus : localRunStatus;
+  const executionSummary = isAgent ? runSummary : localSummary;
+  const compatibleModels = models.filter((item) => generationType === '图片' ? item.capabilities.includes('image') : !item.capabilities.includes('image'));
+  const selectedModel = compatibleModels.find((item) => item.id === modelId) ?? compatibleModels[0] ?? models[0];
+
+  useEffect(() => {
+    if (selectedModel && selectedModel.id !== modelId) setModelId(selectedModel.id);
+  }, [modelId, selectedModel]);
 
   useEffect(() => {
     if (isAgent) return;
@@ -114,29 +110,60 @@ export function NodeChatComposer({
         setGenerationMenuOpen(false);
       if (!cardCountPickerRef.current?.contains(target)) setCardMenuOpen(false);
     };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setGenerationMenuOpen(false);
+      setCardMenuOpen(false);
+    };
     document.addEventListener("mousedown", closeOnOutside);
-    return () => document.removeEventListener("mousedown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
   }, [generationMenuOpen, cardMenuOpen]);
 
   useEffect(() => {
-    if (!mentionOpen && !cardMenuOpen) return;
+    if (!mentionOpen) return;
     const closeOnOutside = (event: MouseEvent) => {
       if (!inputWrapRef.current?.contains(event.target as Node)) {
         setMentionOpen(false);
-        setCardMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", closeOnOutside);
     return () => document.removeEventListener("mousedown", closeOnOutside);
   }, [mentionOpen, cardMenuOpen]);
 
-  const send = (event?: FormEvent) => {
+  const send = async (event?: FormEvent) => {
     event?.preventDefault();
     const value = prompt.trim();
     if (!value) return;
-    onSend(value, model);
+    if (!selectedModel) return;
     setPrompt("");
     if (inputRef.current) inputRef.current.textContent = "";
+    if (!isAgent) {
+      setLocalRunStatus('running');
+      setLocalSummary(['正在理解修改要求…', `正在优化「${nodeTitle}」的内容…`]);
+    }
+    try {
+      const resultSummary = await onSend(value, selectedModel, {
+        generationType: generationType as AgentRunOptions['generationType'],
+        grid: resultGrid,
+      });
+      if (!isAgent) {
+        setLocalRunStatus('completed');
+        setLocalSummary(resultSummary?.slice(0, 3) ?? ['已完成要求解析与内容更新。', `「${nodeTitle}」已写入最新结果。`]);
+        window.setTimeout(() => {
+          setLocalRunStatus('idle');
+          setLocalSummary([]);
+        }, 2400);
+      }
+    } catch (error) {
+      if (!isAgent) {
+        setLocalRunStatus('failed');
+        setLocalSummary([error instanceof Error ? error.message : '执行失败，请重试。']);
+      }
+    }
   };
 
   const getCaretOffset = (fallback = prompt.length) => {
@@ -308,7 +335,11 @@ export function NodeChatComposer({
         <span>
           <Sparkles size={14} />
           {isAgent
-            ? "Agent：读取左侧上下文，输出到右侧"
+            ? effectiveRunStatus === 'running'
+              ? "Agent 正在读取上下文并生成结果…"
+              : effectiveRunStatus === 'failed'
+                ? "Agent 执行失败，请检查后端或模型配置"
+                : "Agent：读取左侧上下文，输出到右侧"
             : `仅修改「${nodeTitle}」`}
         </span>
         {onClose && (
@@ -435,7 +466,7 @@ export function NodeChatComposer({
           >
             <Plus size={15} />
           </button>
-          <NodeSelect value={model} ariaLabel="选择大模型" onChange={setModel} options={models.map((item) => ({ value: item.name, label: item.name, description: item.description, meta: item.duration, icon: item.icon === "sparkles" ? <Sparkles size={20} /> : item.icon === "bot" ? <Bot size={20} /> : <BrainCircuit size={20} /> }))} />
+          <NodeSelect value={selectedModel?.id ?? ''} ariaLabel="选择大模型" onChange={setModelId} options={compatibleModels.map((item) => ({ value: item.id, label: item.name, description: item.description, meta: item.apiKey ? '已配置' : '未配置', icon: item.capabilities.includes('reasoning') ? <BrainCircuit size={20} /> : item.capabilities.includes('image') ? <ImageIcon size={20} /> : item.capabilities.includes('vision') ? <Bot size={20} /> : <Sparkles size={20} /> }))} />
           {isAgent && (
             <div
               className="node-model-picker generation-type-picker nodrag nopan"
@@ -492,17 +523,81 @@ export function NodeChatComposer({
               )}
             </div>
           )}
-          <NodeSelect className="card-count-picker" value={String(cardCount)} ariaLabel="选择生成卡片数量" onChange={(value) => setCardCount(Number(value))} options={[1, 2, 3, 4, 5].map((count) => ({ value: String(count), label: `×${count}`, description: count === 1 ? '生成一个结果' : `生成 ${count} 个结果`, icon: <Layers3 size={20} /> }))} />
+          {isAgent ? (
+            <div
+              className="result-grid-picker nodrag nopan"
+              ref={cardCountPickerRef}
+            >
+              <button
+                type="button"
+                className="card-count-trigger"
+                aria-label="选择 Agent 结果宫格"
+                aria-haspopup="dialog"
+                aria-expanded={cardMenuOpen}
+                onClick={() => setCardMenuOpen((open) => !open)}
+              >
+                <Layers3 size={14} />
+                <span>{resultGrid.rows} × {resultGrid.columns}</span>
+                <ChevronDown className={cardMenuOpen ? "is-open" : ""} size={13} />
+              </button>
+              {cardMenuOpen && (
+                <div
+                  className="result-grid-menu"
+                  role="dialog"
+                  aria-label="自定义宫格"
+                  onMouseLeave={() => setHoveredGrid(resultGrid)}
+                >
+                  <div className="result-grid-menu__header">
+                    <strong>自定义宫格</strong>
+                    <span>{hoveredGrid.rows} × {hoveredGrid.columns}</span>
+                  </div>
+                  <div className="result-grid-menu__cells">
+                    {Array.from({ length: 4 }, (_, rowIndex) =>
+                      Array.from({ length: 4 }, (_, columnIndex) => {
+                        const rows = rowIndex + 1;
+                        const columns = columnIndex + 1;
+                        const isActive =
+                          rows <= hoveredGrid.rows &&
+                          columns <= hoveredGrid.columns;
+                        return (
+                          <button
+                            type="button"
+                            key={`${rows}-${columns}`}
+                            className={isActive ? "is-active" : ""}
+                            aria-label={`${rows} 行 ${columns} 列，共 ${rows * columns} 个结果`}
+                            onMouseEnter={() => setHoveredGrid({ rows, columns })}
+                            onFocus={() => setHoveredGrid({ rows, columns })}
+                            onClick={() => {
+                              const nextGrid = { rows, columns };
+                              setResultGrid(nextGrid);
+                              setHoveredGrid(nextGrid);
+                              setCardMenuOpen(false);
+                            }}
+                          />
+                        );
+                      }),
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : null}
         </div>
-        <button
-          className="node-chat-send"
-          type="submit"
-          disabled={!prompt.trim()}
+          <button
+            className="node-chat-send"
+            type="submit"
+            disabled={!prompt.trim() || effectiveRunStatus === 'running' || !selectedModel || (generationType === '图片' && !selectedModel.apiKey)}
           aria-label="发送聊天请求"
         >
           <CornerDownLeft size={18} />
         </button>
       </footer>
+      {executionSummary.length > 0 && (
+        <div className={`execution-summary execution-summary--${effectiveRunStatus}`} role="status" aria-live="polite">
+          <span className="execution-summary__pulse" />
+          <span>{executionSummary.slice(0, 3).map((line) => <small key={line}>{line}</small>)}</span>
+        </div>
+      )}
     </form>
   );
 }

@@ -1,25 +1,31 @@
 # 节点式 AI 创意策划系统：技术方案与实现分析
 
-## 前端原型
+## 可运行的全栈版本
 
-当前仓库按可扩展的全栈结构组织：前端、后端和 Agent 分离，方便后续独立开发与部署。
+当前仓库按前端、后端和 Agent 分离：XYFlow 负责产品画布，FastAPI/SQLite 负责业务状态与执行记录，Agent 包负责上下文解析和结构化生成。
 
 ```text
 NodeCanvas/
 ├── frontend/    # React + TypeScript + XYFlow 工作台
-├── backend/     # 预留：FastAPI、图数据与业务 API
-└── agent/       # 预留：Agent 编排、上下文解析与模型调用
+├── Backend/     # FastAPI、SQLite 图持久化、知识检索与业务 API
+└── Agent/       # 上下文解析、候选生成、校验与图操作编译
 ```
 
-前端启动：
+本地启动：
 
 ```bash
-cd frontend
+python3.12 -m venv Backend/.venv
+Backend/.venv/bin/python -m pip install -r Backend/requirements.txt
+Backend/.venv/bin/python -m uvicorn Backend.nodecanvas_backend.main:app --reload --port 8000
+
+cd Frontend
 npm install
-npm run dev
+npm run dev -- --port 4173
 ```
 
-首版已经实现：
+前端默认连接 `http://127.0.0.1:8000`，可通过 `VITE_API_URL` 覆盖。
+
+当前已经实现：
 
 - 黑色主题的共享知识库、无限画布、Agent 面板布局
 - 右侧 Agent 收起后变为独立的 Agent 按钮，不保留侧栏占位
@@ -32,6 +38,16 @@ npm run dev
 - 本地文件选择并生成文件节点
 - 右侧 Copilot 输入生成文本需求节点
 - 小地图、缩放控制、悬浮工具栏与工作流状态反馈
+- 画布图自动保存和后端恢复
+- Agent 直接入边上下文解析、知识检索和结构化候选生成
+- 1×1 至 4×4 多结果生成、右侧自动排布和连线
+- Agent Run / Context Snapshot / 结果图持久化
+- OpenAI-compatible 模型接入与无密钥本地开发 Provider
+- LangGraph StateGraph 编排与可测试的阶段状态
+- 浏览器本地模型管理、系统模型、自定义增删改和连接测试
+- DeepSeek 推理、Qwen 视觉/OCR 与 Wan 生图默认配置
+
+Agent 与模型注册表的详细设计见 [agent.md](./agent.md)。
 
 生产构建：
 

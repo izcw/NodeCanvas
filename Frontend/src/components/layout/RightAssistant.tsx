@@ -1,5 +1,6 @@
 import { Aperture, ChevronDown, ChevronRight, CornerDownLeft, History, PanelRightClose, Plus, Sparkles, WandSparkles, Workflow } from 'lucide-react'
 import { FormEvent, useState } from 'react'
+import { useModelRegistry } from '../../features/models/ModelRegistryContext'
 
 type RightAssistantProps = {
   collapsed: boolean
@@ -8,6 +9,7 @@ type RightAssistantProps = {
 }
 
 export function RightAssistant({ collapsed, onToggle, onCreateText }: RightAssistantProps) {
+  const { models } = useModelRegistry()
   const [prompt, setPrompt] = useState('')
   const [messages, setMessages] = useState<string[]>([])
   const send = (event?: FormEvent) => {
@@ -39,7 +41,7 @@ export function RightAssistant({ collapsed, onToggle, onCreateText }: RightAssis
       </div>
       <form className="chat-composer" onSubmit={send}>
         <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() } }} placeholder="描述创意或需求，Agent 会读取上下文…" aria-label="发送给 Agent" />
-        <div className="composer-footer"><div><button type="button" className="composer-tool" aria-label="添加附件"><Plus size={17} /></button><button type="button" className="model-button"><Sparkles size={14} />Kimi K2<ChevronDown size={13} /></button></div><button type="submit" className="send-button" disabled={!prompt.trim()} aria-label="发送"><CornerDownLeft size={17} /></button></div>
+        <div className="composer-footer"><div><button type="button" className="composer-tool" aria-label="添加附件"><Plus size={17} /></button><button type="button" className="model-button"><Sparkles size={14} />{models[0]?.name ?? '未配置模型'}<ChevronDown size={13} /></button></div><button type="submit" className="send-button" disabled={!prompt.trim()} aria-label="发送"><CornerDownLeft size={17} /></button></div>
       </form>
     </aside>
   )

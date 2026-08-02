@@ -2,7 +2,9 @@
 import {
   type ChangeEvent,
   type ReactNode,
+  lazy,
   memo,
+  Suspense,
   useEffect,
   useRef,
   useState,
@@ -26,11 +28,14 @@ import {
   Image as ImageIcon,
   MessageSquareText,
   Paperclip,
+  Pencil,
   Trash2,
 } from 'lucide-react'
 import type { CanvasNode } from '../../types/canvas'
 import { NodeChatComposer } from './NodeChatComposer'
 import { NodeSelect } from './NodeSelect'
+
+const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'))
 
 type NodeKind = CanvasNode['type']
 
@@ -44,6 +49,7 @@ type NodeFrameProps = {
   maxWidth: number
   maxHeight: number
   connectable?: boolean
+  generationStatus?: CanvasNode['data']['generationStatus']
 }
 
 type NodeHeaderProps = {
@@ -185,6 +191,7 @@ function NodeFrame({
   maxWidth,
   maxHeight,
   connectable = true,
+  generationStatus,
 }: NodeFrameProps) {
   const { getNode, getNodes, setNodes } = useReactFlow()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -244,6 +251,7 @@ function NodeFrame({
       />
       {connectable && <NodeHandles id={id} />}
       <div className="node-card">{children}</div>
+      {generationStatus && <GenerationSand status={generationStatus} />}
       {menuOpen && (
         <NodeContextMenu
           id={id}
@@ -253,6 +261,104 @@ function NodeFrame({
         />
       )}
     </article>
+  )
+}
+
+function GenerationSand({ status }: { status: NonNullable<CanvasNode['data']['generationStatus']> }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const statusRef = useRef(status)
+  const settlingStartedRef = useRef<number | null>(status === 'settling' ? performance.now() : null)
+
+  useEffect(() => {
+    statusRef.current = status
+    if (status === 'settling' && settlingStartedRef.current === null) settlingStartedRef.current = performance.now()
+  }, [status])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    const host = canvas?.parentElement
+    const context = canvas?.getContext('2d')
+    if (!canvas || !host || !context) return
+    type Particle = { x: number; y: number; velocity: number; radius: number; phase: number; alpha: number; tint: number }
+    let width = 1
+    let height = 1
+    let frame = 0
+    let lastFrameAt = 0
+    let particles: Particle[] = []
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const createParticle = (): Particle => ({
+      x: Math.random() * width,
+      y: Math.random() * height,
+      velocity: .18 + Math.random() * .42,
+      radius: .62 + Math.random() * 1.08,
+      phase: Math.random() * Math.PI * 2,
+      alpha: .34 + Math.random() * .62,
+      tint: Math.random(),
+    })
+    const resize = () => {
+      width = Math.max(1, host.clientWidth)
+      height = Math.max(1, host.clientHeight)
+      const ratio = Math.min(window.devicePixelRatio || 1, 1.25)
+      canvas.width = Math.round(width * ratio)
+      canvas.height = Math.round(height * ratio)
+      canvas.style.width = `${width}px`
+      canvas.style.height = `${height}px`
+      context.setTransform(ratio, 0, 0, ratio, 0, 0)
+      const count = Math.max(76, Math.min(180, Math.round((width * height) / 1150)))
+      particles = Array.from({ length: count }, createParticle)
+    }
+    const observer = new ResizeObserver(resize)
+    observer.observe(host)
+    resize()
+    const render = (time: number) => {
+      if (!reduceMotion && time - lastFrameAt < 33) {
+        frame = requestAnimationFrame(render)
+        return
+      }
+      lastFrameAt = time
+      context.clearRect(0, 0, width, height)
+      const settlingProgress = statusRef.current === 'settling'
+        ? Math.min(1, (time - (settlingStartedRef.current ?? time)) / 3200)
+        : 0
+      for (const particle of particles) {
+        const flow = Math.sin(particle.y * .02 + time * .00075 + particle.phase) * .28
+        const lift = Math.cos(particle.x * .014 - time * .00055 + particle.phase) * .12
+        particle.x += (particle.velocity + flow) * (statusRef.current === 'settling' ? 1.9 : 1)
+        particle.y += lift - particle.velocity * (statusRef.current === 'settling' ? .7 : .08)
+        if (statusRef.current === 'running') {
+          if (particle.x > width + 8) particle.x = -8
+          if (particle.y < -8) particle.y = height + 8
+          if (particle.y > height + 8) particle.y = -8
+        }
+        const twinkle = .58 + .32 * Math.sin(time * .0025 + particle.phase)
+        const alpha = particle.alpha * twinkle * (1 - settlingProgress)
+        const color = particle.tint > .7 ? `rgba(225,205,255,${alpha})` : particle.tint > .35 ? `rgba(172,209,255,${alpha})` : `rgba(255,255,255,${alpha})`
+        context.beginPath()
+        context.arc(particle.x, particle.y, particle.radius, 0, Math.PI * 2)
+        context.fillStyle = color
+        context.fill()
+      }
+      if (!reduceMotion) frame = requestAnimationFrame(render)
+    }
+    if (reduceMotion) render(performance.now())
+    else frame = requestAnimationFrame(render)
+    return () => {
+      cancelAnimationFrame(frame)
+      observer.disconnect()
+    }
+  }, [])
+
+  return (
+    <div
+      className={`generation-sand generation-sand--${status} nodrag nopan`}
+      aria-label={status === 'running' ? '节点正在生成' : '节点生成完成'}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.preventDefault()}
+    >
+      <canvas ref={canvasRef} aria-hidden="true" />
+    </div>
   )
 }
 
@@ -284,6 +390,11 @@ function NodeHeader({
 export const TextNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => {
   const { updateNodeData } = useReactFlow()
   const format = data.format ?? 'text'
+  const [editingMarkdown, setEditingMarkdown] = useState(false)
+
+  useEffect(() => {
+    if (format === 'text') setEditingMarkdown(false)
+  }, [format])
 
   return (
     <NodeFrame
@@ -294,6 +405,7 @@ export const TextNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
       minHeight={210}
       maxWidth={660}
       maxHeight={620}
+      generationStatus={data.generationStatus}
     >
       <NodeHeader
         icon={<FileText size={16} />}
@@ -302,14 +414,27 @@ export const TextNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
         nodeId={id}
       />
       <div className="node-card__body node-card__body--text">
-        <textarea
-          className="nodrag nopan nowheel"
-          value={data.content ?? ''}
-          onChange={(event) => updateNodeData(id, { content: event.target.value })}
-          placeholder="写下想法、脚本或提示词…"
-          aria-label={`${data.title}内容`}
-        />
-        <NodeSelect className="text-format-picker" value={format} ariaLabel="选择文本格式" onChange={(value) => updateNodeData(id, { format: value as 'text' | 'markdown' })} options={[{ value: 'text', label: '纯文本', description: '普通文本编辑', icon: <FileText size={18} /> }, { value: 'markdown', label: 'Markdown', description: '支持 Markdown 语法', icon: <Code2 size={18} /> }]} />
+        {format === 'markdown' && !editingMarkdown ? (
+          <div className="markdown-preview nodrag nopan nowheel" aria-label={`${data.title} Markdown 预览`}>
+            {data.content?.trim() ? (
+              <Suspense fallback={<span className="markdown-preview__empty">正在渲染 Markdown…</span>}>
+                <MarkdownRenderer content={data.content} />
+              </Suspense>
+            ) : <span className="markdown-preview__empty">暂无 Markdown 内容</span>}
+          </div>
+        ) : (
+          <textarea
+            className="nodrag nopan nowheel"
+            value={data.content ?? ''}
+            onChange={(event) => updateNodeData(id, { content: event.target.value })}
+            placeholder={format === 'markdown' ? '输入 Markdown 源码…' : '写下想法、脚本或提示词…'}
+            aria-label={`${data.title}内容`}
+          />
+        )}
+        <div className="text-node-controls nodrag nopan">
+          <NodeSelect className="text-format-picker" value={format} ariaLabel="选择文本格式" onChange={(value) => { const nextFormat = value as 'text' | 'markdown'; updateNodeData(id, { format: nextFormat }); setEditingMarkdown(false) }} options={[{ value: 'text', label: '纯文本', description: '普通文本编辑', icon: <FileText size={18} /> }, { value: 'markdown', label: 'Markdown', description: '渲染 Markdown 内容', icon: <Code2 size={18} /> }]} />
+          {format === 'markdown' && <button type="button" className="markdown-edit-toggle nodrag nopan" onClick={(event) => { event.stopPropagation(); setEditingMarkdown((value) => !value) }} aria-label={editingMarkdown ? '完成 Markdown 编辑并预览' : '编辑 Markdown 源码'}>{editingMarkdown ? <><Check size={13} />预览</> : <><Pencil size={13} />编辑</>}</button>}
+        </div>
       </div>
     </NodeFrame>
   )
@@ -325,6 +450,7 @@ export const ImageNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) =>
       minHeight={190}
       maxWidth={760}
       maxHeight={660}
+      generationStatus={data.generationStatus}
     >
       <NodeHeader
         icon={<ImageIcon size={16} />}
@@ -353,6 +479,7 @@ export const FileNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
       minHeight={126}
       maxWidth={620}
       maxHeight={300}
+      generationStatus={data.generationStatus}
     >
       <NodeHeader
         icon={<Paperclip size={16} />}
@@ -388,6 +515,7 @@ export const CommentNode = memo(
         maxWidth={380}
         maxHeight={300}
         connectable={false}
+        generationStatus={data.generationStatus}
       >
         <NodeHeader
           icon={<MessageSquareText size={16} />}
@@ -429,6 +557,7 @@ export const AgentNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) =>
       minHeight={290}
       maxWidth={680}
       maxHeight={560}
+      generationStatus={data.generationStatus}
     >
       <NodeHeader
         icon={<Bot size={16} />}
@@ -441,9 +570,11 @@ export const AgentNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) =>
           mode="agent"
           nodeTitle={data.title}
           nodes={allNodes.filter((node) => allowedNodeIds.has(node.id))}
-          onSend={(prompt, model) => {
+          runStatus={data.agentStatus}
+          runSummary={data.agentSummary}
+          onSend={(prompt, model, options) => {
             window.dispatchEvent(new CustomEvent('nodecanvas:agent-send', {
-              detail: { sourceId: id, prompt, model },
+              detail: { sourceId: id, prompt, model, options },
             }))
           }}
         />
