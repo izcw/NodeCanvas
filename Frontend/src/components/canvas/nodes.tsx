@@ -483,7 +483,7 @@ export const FileNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
     >
       <NodeHeader
         icon={<Paperclip size={16} />}
-        label="文件节点"
+        label={data.knowledgeId ? '知识库附件' : '附件节点'}
         title={data.title}
         nodeId={id}
       />
@@ -494,8 +494,9 @@ export const FileNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
         </span>
         <span className="node-card__file-copy">
           <strong>{data.fileName || '键盘产品卖点.pdf'}</strong>
-          <small>{data.fileSize || '2.4 MB'} · 已解析</small>
+          <small>{data.fileSize || '2.4 MB'} · {data.fileStatus || '已解析'}</small>
         </span>
+        {data.knowledgeId && <span className="node-card__knowledge-badge">知识库</span>}
       </div>
     </NodeFrame>
   )

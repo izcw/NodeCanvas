@@ -17,11 +17,13 @@ type LeftSidebarProps = {
   onFocusGroup: (nodeIds: string[]) => void
   onUploadKnowledge: () => void
   onSelectKnowledge: (item: KnowledgeItem) => void
+  onAttachKnowledge: (item: KnowledgeItem) => void
+  onDeleteKnowledge: (item: KnowledgeItem) => void
   onNewCanvas: () => void
   onRenameNode: (id: string, title: string) => void
 }
 
-export function LeftSidebar({ collapsed, tab, groups, nodes, knowledge, onTabChange, onToggle, onFocusGroup, onUploadKnowledge, onSelectKnowledge, onNewCanvas, onRenameNode }: LeftSidebarProps) {
+export function LeftSidebar({ collapsed, tab, groups, nodes, knowledge, onTabChange, onToggle, onFocusGroup, onUploadKnowledge, onSelectKnowledge, onAttachKnowledge, onDeleteKnowledge, onNewCanvas, onRenameNode }: LeftSidebarProps) {
   const [canvases, setCanvases] = useState(['画布 1'])
   const [activeCanvas, setActiveCanvas] = useState('画布 1')
   const [canvasMenuOpen, setCanvasMenuOpen] = useState(false)
@@ -30,6 +32,8 @@ export function LeftSidebar({ collapsed, tab, groups, nodes, knowledge, onTabCha
   const [editingGroup, setEditingGroup] = useState<string | null>(null)
   const [editingNode, setEditingNode] = useState<string | null>(null)
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const [knowledgeQuery, setKnowledgeQuery] = useState('')
+  const [knowledgeMenuId, setKnowledgeMenuId] = useState<string | null>(null)
   const switcherRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!canvasMenuOpen) return
@@ -40,6 +44,7 @@ export function LeftSidebar({ collapsed, tab, groups, nodes, knowledge, onTabCha
   if (collapsed) {
     return <aside className="left-sidebar collapsed-hidden" />
   }
+  const filteredKnowledge = knowledge.filter((item) => item.name.toLowerCase().includes(knowledgeQuery.trim().toLowerCase()))
 
   return (
     <aside className="left-sidebar">
@@ -80,8 +85,10 @@ export function LeftSidebar({ collapsed, tab, groups, nodes, knowledge, onTabCha
           <div className="sidebar-section-title"><span>共享知识库</span><span className="count-pill">{knowledge.length}</span></div>
           <p className="sidebar-hint">工作区内的 Agent 与画布均可引用</p>
           <button className="knowledge-upload" onClick={onUploadKnowledge}><FolderUp size={16} />上传共享文件</button>
+          <input className="knowledge-search" value={knowledgeQuery} onChange={(event) => setKnowledgeQuery(event.target.value)} placeholder="搜索知识库文件" aria-label="搜索知识库文件" />
           <div className="knowledge-list">
-            {knowledge.map((item) => <button key={item.id} className="knowledge-item" onClick={() => onSelectKnowledge(item)}><span className="node-list-icon file"><FileText size={16} /></span><span><strong>{item.name}</strong><small>{item.kind} · {item.size}</small></span></button>)}
+            {filteredKnowledge.map((item) => <div key={item.id} className="knowledge-item"><button className="knowledge-item-main" onClick={() => onSelectKnowledge(item)}><span className="node-list-icon file"><FileText size={16} /></span><span><strong>{item.name}</strong><small>{item.kind} · {item.size} · {item.status ?? '已索引'}</small></span></button><button className="knowledge-item-more" onClick={() => setKnowledgeMenuId((id) => id === item.id ? null : item.id)} aria-label={`${item.name}操作`}><MoreHorizontal size={16} /></button>{knowledgeMenuId === item.id && <div className="knowledge-action-menu"><button onClick={() => { onAttachKnowledge(item); setKnowledgeMenuId(null) }}><Paperclip size={14} />添加到画布</button><button className="danger" onClick={() => { onDeleteKnowledge(item); setKnowledgeMenuId(null) }}><Trash2 size={14} />删除文件</button></div>}</div>)}
+            {filteredKnowledge.length === 0 && <p className="knowledge-empty">{knowledge.length ? '没有匹配的文件' : '上传文件后，Agent 即可检索引用。'}</p>}
           </div>
         </section>
       )}

@@ -71,6 +71,20 @@ def test_share_link_returns_a_read_only_graph_snapshot(tmp_path: Path) -> None:
         assert shared.json()["nodes"][0]["data"]["title"] == "Shared"
 
 
+def test_knowledge_document_can_be_listed_and_deleted(tmp_path: Path) -> None:
+    main.repository = SQLiteRepository(tmp_path / "knowledge.db")
+    with TestClient(main.app) as client:
+        created = client.post("/api/projects/test/knowledge/documents", json={
+            "id": "brief", "name": "brief.md", "kind": "MD", "content": "磁轴键盘卖点",
+        })
+        assert created.status_code == 201, created.text
+        listed = client.get("/api/projects/test/knowledge/documents")
+        assert listed.status_code == 200
+        assert listed.json()["items"][0]["name"] == "brief.md"
+        assert client.delete("/api/projects/test/knowledge/documents/brief").status_code == 204
+        assert client.get("/api/projects/test/knowledge/documents").json()["items"] == []
+
+
 def test_project_directory_lists_existing_and_new_projects(tmp_path: Path) -> None:
     main.repository = SQLiteRepository(tmp_path / "projects.db")
     with TestClient(main.app) as client:

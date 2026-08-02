@@ -7,6 +7,8 @@ export type CanvasNodeData = {
   fileName?: string
   fileSize?: string
   fileKind?: string
+  knowledgeId?: string
+  fileStatus?: '已解析' | '待解析'
   format?: 'text' | 'markdown'
   agentStatus?: 'idle' | 'running' | 'completed' | 'failed'
   agentError?: string
@@ -24,6 +26,8 @@ export type KnowledgeItem = {
   name: string
   kind: string
   size: string
+  createdAt?: string
+  status?: '已索引' | '索引中' | '索引失败'
 }
 
 export type AgentRunOptions = {

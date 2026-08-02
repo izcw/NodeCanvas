@@ -283,6 +283,14 @@ class SQLiteRepository:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def delete_knowledge_document(self, project_id: str, document_id: str) -> bool:
+        """Remove a document and its indexed chunks (via the FK cascade)."""
+        with self.connect() as connection:
+            return connection.execute(
+                "DELETE FROM knowledge_documents WHERE project_id = ? AND id = ?",
+                (project_id, document_id),
+            ).rowcount > 0
+
     def search_knowledge(self, project_id: str, query: str, limit: int = 6) -> list[str]:
         terms = [term for term in re_split(query.lower()) if len(term) > 1][:12]
         with self.connect() as connection:

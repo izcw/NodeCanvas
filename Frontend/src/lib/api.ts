@@ -1,4 +1,4 @@
-import type { AgentRunOptions, CanvasEdge, CanvasNode, ModelConfig, ResponseLanguage } from '../types/canvas'
+import type { AgentRunOptions, CanvasEdge, CanvasNode, KnowledgeItem, ModelConfig, ResponseLanguage } from '../types/canvas'
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
 export const DEFAULT_PROJECT_ID = 'default'
@@ -184,4 +184,27 @@ export function uploadKnowledgeDocument(
     method: 'POST',
     body: JSON.stringify(document),
   })
+}
+
+type KnowledgeDocumentResponse = { id: string; name: string; kind: string; size: number; created_at: string }
+
+function formatKnowledgeSize(size: number) {
+  if (size < 1024) return `${Math.max(1, size)} 字符`
+  return `${Math.ceil(size / 1024)} KB`
+}
+
+export async function loadKnowledgeDocuments(projectId = currentProjectId()): Promise<KnowledgeItem[]> {
+  const response = await apiRequest<{ items: KnowledgeDocumentResponse[] }>(`/api/projects/${projectId}/knowledge/documents`)
+  return response.items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    kind: item.kind,
+    size: formatKnowledgeSize(item.size),
+    createdAt: item.created_at,
+    status: '已索引',
+  }))
+}
+
+export async function deleteKnowledgeDocument(documentId: string, projectId = currentProjectId()) {
+  await apiRequest<void>(`/api/projects/${projectId}/knowledge/documents/${documentId}`, { method: 'DELETE' })
 }

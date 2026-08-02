@@ -173,3 +173,9 @@ def add_knowledge_document(project_id: str, document: KnowledgeDocumentCreate) -
 @app.get("/api/projects/{project_id}/knowledge/documents", response_model=KnowledgeDocumentList)
 def list_knowledge_documents(project_id: str) -> KnowledgeDocumentList:
     return KnowledgeDocumentList(items=repository.list_knowledge_documents(project_id))
+
+
+@app.delete("/api/projects/{project_id}/knowledge/documents/{document_id}", status_code=204)
+def delete_knowledge_document(project_id: str, document_id: str) -> None:
+    if not repository.delete_knowledge_document(project_id, document_id):
+        raise HTTPException(status_code=404, detail="knowledge document not found")
