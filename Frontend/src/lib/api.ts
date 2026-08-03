@@ -4,7 +4,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').r
 export const DEFAULT_PROJECT_ID = 'default'
 export const ACTIVE_PROJECT_STORAGE_KEY = 'nodecanvas:active-project-id:v1'
 
-function currentProjectId() {
+export function currentProjectId() {
   const url = new URL(window.location.href)
   const projectFromUrl = url.pathname.match(/^\/canvas\/([^/]+)$/)?.[1]
   if (projectFromUrl) return projectFromUrl
@@ -36,8 +36,22 @@ export type AgentRunResponse = {
       node_id: string
       node_type: CanvasNode['type']
     }>
+    candidates: Array<{ title: string; content: string }>
   }
   graph: ProjectGraph
+}
+
+export type AgentRunHistoryItem = {
+  id: string
+  source_node_id: string
+  status: 'completed' | 'failed'
+  provider: string
+  prompt: string
+  operation_mode: 'agent' | 'update_source' | 'chat'
+  title: string
+  category: 'text' | 'image' | 'file' | 'comment' | 'agent'
+  response: string
+  created_at: string
 }
 
 async function apiRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -77,6 +91,10 @@ export function saveProjectGraph(nodes: CanvasNode[], edges: CanvasEdge[], revis
   })
 }
 
+export function cancelAgentRun(clientRunId: string, projectId = currentProjectId()) {
+  return apiRequest<{ cancelled: boolean }>(`/api/projects/${projectId}/agent/runs/${encodeURIComponent(clientRunId)}/cancel`, { method: 'POST' })
+}
+
 export async function createShareLink(nodes: CanvasNode[], edges: CanvasEdge[], revision = 0, projectId = currentProjectId()) {
   const response = await apiRequest<{ id: string }>(`/api/projects/${projectId}/shares`, {
     method: 'POST',
@@ -101,10 +119,14 @@ export function executeAgent(
   revision = 0,
   responseLanguage: ResponseLanguage = 'zh-CN',
   projectId = currentProjectId(),
+  signal?: AbortSignal,
+  clientRunId?: string,
 ) {
   return apiRequest<AgentRunResponse>(`/api/projects/${projectId}/agent/runs`, {
     method: 'POST',
+    signal,
     body: JSON.stringify({
+      client_run_id: clientRunId,
       source_node_id: sourceNodeId,
       prompt,
       model: model.name,
@@ -128,7 +150,15 @@ export function executeAgent(
   })
 }
 
-export function executeNodeChat(
+export function loadAgentRuns(projectId = currentProjectId(), limit = 100) {
+  return apiRequest<{ items: AgentRunHistoryItem[] }>(`/api/projects/${projectId}/agent/runs?limit=${limit}`)
+}
+
+export function clearAgentRuns(projectId = currentProjectId()) {
+  return apiRequest<void>(`/api/projects/${projectId}/agent/runs`, { method: 'DELETE' })
+}
+
+export async function executeNodeChat(
   sourceNodeId: string,
   prompt: string,
   model: ModelConfig,
@@ -137,10 +167,16 @@ export function executeNodeChat(
   revision = 0,
   responseLanguage: ResponseLanguage = 'zh-CN',
   projectId = currentProjectId(),
+  onDelta?: (content: string, type: 'content' | 'reasoning') => void,
+  signal?: AbortSignal,
+  clientRunId?: string,
 ) {
-  return apiRequest<AgentRunResponse>(`/api/projects/${projectId}/agent/runs`, {
+  const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/agent/node-chat/stream`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
     body: JSON.stringify({
+      client_run_id: clientRunId,
       source_node_id: sourceNodeId,
       prompt,
       model: model.name,
@@ -161,6 +197,108 @@ export function executeNodeChat(
       graph: { nodes, edges, revision },
     }),
   })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { detail?: string } | null
+    throw new Error(payload?.detail || `请求失败（${response.status}）`)
+  }
+  if (!response.body) throw new Error('当前浏览器不支持流式响应。')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const completed: { run?: AgentRunResponse['run']; graph?: ProjectGraph } = {}
+  const consumeLine = (line: string) => {
+    if (!line.trim()) return
+    const event = JSON.parse(line) as { type: 'reasoning' | 'delta' | 'done' | 'error'; content?: string; message?: string; run?: AgentRunResponse['run']; graph?: ProjectGraph }
+    if (event.type === 'reasoning' && event.content) onDelta?.(event.content, 'reasoning')
+    if (event.type === 'delta' && event.content) onDelta?.(event.content, 'content')
+    if (event.type === 'done' && event.run && event.graph) {
+      completed.run = event.run
+      completed.graph = event.graph
+    }
+    if (event.type === 'error') throw new Error(event.message || '节点修改流式响应失败。')
+  }
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) consumeLine(line)
+    if (done) break
+  }
+  if (buffer.trim()) consumeLine(buffer)
+  if (!completed.run || !completed.graph) throw new Error('节点修改流式响应未正常完成。')
+  return { run: completed.run, graph: completed.graph }
+}
+
+export async function executeAgentChat(
+  sourceNodeId: string,
+  prompt: string,
+  model: ModelConfig,
+  nodes: CanvasNode[],
+  edges: CanvasEdge[],
+  revision = 0,
+  responseLanguage: ResponseLanguage = 'zh-CN',
+  projectId = currentProjectId(),
+  onDelta?: (content: string) => void,
+  signal?: AbortSignal,
+  clientRunId?: string,
+) {
+  const response = await fetch(`${API_BASE_URL}/api/projects/${projectId}/agent/chat/stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    signal,
+    body: JSON.stringify({
+      client_run_id: clientRunId,
+      source_node_id: sourceNodeId,
+      prompt,
+      model: model.name,
+      connection: {
+        id: model.id,
+        name: model.name,
+        provider: model.provider,
+        model_id: model.modelId,
+        base_url: model.baseUrl,
+        api_key: model.apiKey,
+        protocol: model.protocol,
+        capabilities: model.capabilities,
+      },
+      generation_type: '文本',
+      operation_mode: 'chat',
+      response_language: responseLanguage,
+      grid: { rows: 1, columns: 1 },
+      graph: { nodes, edges, revision },
+    }),
+  })
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { detail?: string } | null
+    throw new Error(payload?.detail || `请求失败（${response.status}）`)
+  }
+  if (!response.body) throw new Error('当前浏览器不支持流式响应。')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  const completed: { run?: AgentRunResponse['run'] } = {}
+  const consumeLine = (line: string) => {
+    if (!line.trim()) return
+    const event = JSON.parse(line) as { type: 'delta' | 'done' | 'error'; content?: string; message?: string; run?: AgentRunResponse['run'] }
+    if (event.type === 'delta' && event.content) onDelta?.(event.content)
+    if (event.type === 'done' && event.run) completed.run = event.run
+    if (event.type === 'error') throw new Error(event.message || '流式回答失败。')
+  }
+
+  while (true) {
+    const { value, done } = await reader.read()
+    buffer += decoder.decode(value, { stream: !done })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() ?? ''
+    for (const line of lines) consumeLine(line)
+    if (done) break
+  }
+  if (buffer.trim()) consumeLine(buffer)
+  if (!completed.run) throw new Error('流式回答未正常完成。')
+  return { run: completed.run }
 }
 
 export function testModelConnection(model: ModelConfig) {

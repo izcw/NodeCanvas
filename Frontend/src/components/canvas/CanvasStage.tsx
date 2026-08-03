@@ -1,18 +1,19 @@
 import { addEdge, Background, BackgroundVariant, BaseEdge, ConnectionMode, getBezierPath, Handle, MiniMap, NodeToolbar, Panel, Position, ReactFlow, SelectionMode, useReactFlow } from '@xyflow/react'
 import type { Connection, EdgeProps, OnConnectEnd, OnConnectStart, OnEdgesChange, OnMove, OnNodesChange, XYPosition } from '@xyflow/react'
-import { AlignHorizontalSpaceAround, AlignVerticalSpaceAround, BoxSelect, ChevronDown, CircleHelp, Command, Copy, Eye, FolderPlus, Grid2X2, Grid3X3, Link2, LocateFixed, Map, MessageSquareText, Minimize2, Plus, Redo2, Search, Share2, Trash2, Undo2, Workflow } from 'lucide-react'
+import { AlignHorizontalSpaceAround, AlignVerticalSpaceAround, BoxSelect, ChevronDown, Copy, Eye, FolderPlus, Grid2X2, Grid3X3, History, Link2, LocateFixed, Map, MessageSquareText, Minimize2, Plus, Redo2, Search, Share2, Trash2, Undo2, Workflow, X } from 'lucide-react'
 import { MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentRunOptions, CanvasEdge, CanvasNode, ModelConfig } from '../../types/canvas'
 import type { KnowledgeItem } from '../../types/canvas'
 import { AddNodeMenu } from './AddNodeMenu'
 import { BrandLogo } from '../BrandLogo'
 import { NodeChatComposer } from './NodeChatComposer'
-import { nodeTypes } from './nodes'
+import { CanvasNodeReadOnlyContext, nodeTypes } from './nodes'
 import { KnowledgePreview } from './KnowledgePreview'
 import { FloatingButtonGroup } from '../ui/FloatingButtonGroup'
 import { Bot } from 'lucide-react'
 import { formatTokenCount, useModelRegistry } from '../../features/models/ModelRegistryContext'
 import { toPng } from 'html-to-image'
+import { clearAgentRuns, currentProjectId, loadAgentRuns } from '../../lib/api'
 
 type CanvasStageProps = {
   nodes: CanvasNode[]
@@ -23,10 +24,9 @@ type CanvasStageProps = {
   onAddText: (position?: XYPosition, onCreated?: (id: string) => void) => void
   onAddImage: (position?: XYPosition, onCreated?: (id: string) => void) => void
   onAddFile: (position?: XYPosition, onCreated?: (id: string) => void) => void
-  onAddAgent: (position?: XYPosition, onCreated?: (id: string) => void) => void
   onAddComment: (position?: XYPosition) => void
-  onChatAnswer: (sourceId: string, prompt: string, model: ModelConfig) => Promise<string[]>
-  onAgentRun: (sourceId: string, prompt: string, model: ModelConfig, options: AgentRunOptions) => void
+  onChatAnswer: (sourceId: string, prompt: string, model: ModelConfig, onDelta?: (content: string, type: 'content' | 'reasoning') => void, signal?: AbortSignal) => Promise<string[]>
+  onAgentRun: (sourceId: string, prompt: string, model: ModelConfig, options: AgentRunOptions, signal?: AbortSignal) => void | Promise<void>
   canUndo: boolean
   canRedo: boolean
   onUndo: () => void
@@ -47,6 +47,8 @@ type CanvasStageProps = {
 
 type MenuMode = 'add' | 'context' | 'reference'
 type MenuState = { mode: MenuMode; canvasPosition?: XYPosition; screenPosition?: { x: number; y: number } }
+type ChatHistoryCategory = 'text' | 'image' | 'file' | 'comment' | 'agent'
+type ChatHistoryEntry = { id: string; category: ChatHistoryCategory; title: string; prompt: string; createdAt: string }
 
 const edgeTypes = { flow: FlowEdge }
 const canvasNodeTypes = { ...nodeTypes, selectionConnector: SelectionConnectorNode, connectionPreview: ConnectionPreviewNode }
@@ -67,7 +69,7 @@ function readStoredViewport(): StoredViewport | null {
   }
 }
 
-export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdges, onAddText, onAddImage, onAddFile, onAddAgent, onAddComment, onChatAnswer, onAgentRun, canUndo, canRedo, onUndo, onRedo, onNodeDragStart, onNodeDragStop, knowledgePreview, onCloseKnowledgePreview, leftCollapsed, agentCollapsed, onToggleLeft, onToggleAgent, readOnly, onCreateShareLink, modificationTargetIds, onToggleModificationTarget }: CanvasStageProps) {
+export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdges, onAddText, onAddImage, onAddFile, onAddComment, onChatAnswer, onAgentRun, canUndo, canRedo, onUndo, onRedo, onNodeDragStart, onNodeDragStop, knowledgePreview, onCloseKnowledgePreview, leftCollapsed, agentCollapsed, onToggleLeft, onToggleAgent, readOnly, onCreateShareLink, modificationTargetIds, onToggleModificationTarget }: CanvasStageProps) {
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [zoom, setZoom] = useState(72)
   const [showMiniMap, setShowMiniMap] = useState(true)
@@ -83,8 +85,14 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   const [highlightedSearchIndex, setHighlightedSearchIndex] = useState(0)
   const [viewMode, setViewMode] = useState<'workflow' | 'storyboard'>('workflow')
   const [presentationMode, setPresentationMode] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [historyFilter, setHistoryFilter] = useState<ChatHistoryCategory | 'all'>('all')
+  const [chatHistory, setChatHistory] = useState<ChatHistoryEntry[]>([])
+  const projectId = currentProjectId()
+  const [copiedHistoryId, setCopiedHistoryId] = useState<string | null>(null)
   const stageRef = useRef<HTMLElement>(null)
   const [selectionDragPosition, setSelectionDragPosition] = useState<XYPosition | null>(null)
+  const [boxSelectionActive, setBoxSelectionActive] = useState(false)
   const [canvasPanning, setCanvasPanning] = useState(false)
   const [selectionGenerateMenu, setSelectionGenerateMenu] = useState<Omit<MenuState, 'mode'> | null>(null)
   const [pendingConnection, setPendingConnection] = useState<{ source: string; sourceHandle: string; canvasPosition: XYPosition } | null>(null)
@@ -101,6 +109,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   const interactionLocked = presentationMode || readOnly || modificationTargetIds !== undefined
   const nodeInteractionsLocked = interactionLocked || canvasPanning
   const activeNode = nodes.find((node) => node.id === activeNodeId)
+  const activeNodeExecutionLocked = activeNode?.data.agentStatus === 'running' || Boolean(activeNode?.data.generationStatus)
   const selectedNodes = useMemo(() => nodes.filter((node) => node.selected), [nodes])
   const selectedNodeIds = useMemo(() => selectedNodes.map((node) => node.id), [selectedNodes])
   const searchResults = useMemo(() => nodes.filter((node) => `${node.data.title} ${node.data.content ?? ''}`.toLowerCase().includes(query.toLowerCase())), [nodes, query])
@@ -167,15 +176,26 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [onRedo, onUndo])
-  useEffect(() => {
-    const handleAgentRun = (event: Event) => {
-      const { sourceId, prompt, model, options } = (event as CustomEvent<{ sourceId: string; prompt: string; model: ModelConfig; options: AgentRunOptions }>).detail
-      onAgentRun(sourceId, prompt, model, options)
-    }
-    window.addEventListener('nodecanvas:agent-send', handleAgentRun)
-    return () => window.removeEventListener('nodecanvas:agent-send', handleAgentRun)
-  }, [onAgentRun])
   useEffect(() => setHighlightedSearchIndex(0), [query, searchOpen])
+  useEffect(() => {
+    let active = true
+    setChatHistory([])
+    void loadAgentRuns(projectId).then(({ items }) => {
+      if (!active) return
+      setChatHistory(items.map((item) => ({
+        id: item.id,
+        category: item.category,
+        title: item.title,
+        prompt: item.prompt,
+        createdAt: new Date(item.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }),
+      })))
+    }).catch((error) => console.warn('Failed to restore project chat history.', error))
+    return () => { active = false }
+  }, [projectId])
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => window.dispatchEvent(new Event('resize')))
+    return () => cancelAnimationFrame(frame)
+  }, [leftCollapsed, agentCollapsed])
   useEffect(() => {
     if (!readOnly || !nodes.length || sharedGraphFittedRef.current) return
     const frame = requestAnimationFrame(() => {
@@ -224,6 +244,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     return () => document.removeEventListener('fullscreenchange', syncFullscreenState)
   }, [])
   const togglePresentation = useCallback(async () => {
+    if (activeNodeExecutionLocked) return
     const stage = stageRef.current
     if (!stage) return
     if (document.fullscreenElement) {
@@ -239,7 +260,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
       // The visual presentation mode remains a useful fallback where the
       // browser declines programmatic fullscreen requests.
     }
-  }, [])
+  }, [activeNodeExecutionLocked])
   useEffect(() => {
     if (!leftCollapsed) return
     const bar = document.querySelector('.collapsed-workspace-bar .brand-logo')
@@ -256,7 +277,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     window.addEventListener('keydown', onEscape)
     return () => window.removeEventListener('keydown', onEscape)
   }, [searchOpen])
-  const chooseSearchResult = (node: CanvasNode) => { setActiveNodeId(node.id); setSearchOpen(false); void fitView({ nodes: [{ id: node.id }], duration: 280, padding: 0.3, maxZoom: 1.15 }) }
+  const chooseSearchResult = (node: CanvasNode) => { if (activeNodeExecutionLocked) return; setActiveNodeId(node.id); setSearchOpen(false); void fitView({ nodes: [{ id: node.id }], duration: 280, padding: 0.3, maxZoom: 1.15 }) }
   const onSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key === 'ArrowDown') { event.preventDefault(); setHighlightedSearchIndex((index) => searchResults.length ? (index + 1) % searchResults.length : 0) }
     else if (event.key === 'ArrowUp') { event.preventDefault(); setHighlightedSearchIndex((index) => searchResults.length ? (index - 1 + searchResults.length) % searchResults.length : 0) }
@@ -321,6 +342,24 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     viewportSaveTimerRef.current = null
   }, [readOnly])
   const changeZoom = (value: number) => { setZoom(value); void zoomTo(value / 100, { duration: 0 }) }
+  const copyHistoryEntry = async (item: ChatHistoryEntry) => {
+    try {
+      await navigator.clipboard.writeText(item.prompt)
+      setCopiedHistoryId(item.id)
+      window.setTimeout(() => setCopiedHistoryId((current) => current === item.id ? null : current), 1600)
+    } catch {
+      setCopiedHistoryId(null)
+    }
+  }
+  const clearChatHistory = async () => {
+    try {
+      await clearAgentRuns(projectId)
+    } catch (error) {
+      console.warn('Failed to clear project chat history.', error)
+    }
+    setChatHistory([])
+    setCopiedHistoryId(null)
+  }
 
   const arrangeSelectedNodes = (mode: 'grid' | 'horizontal' | 'vertical') => {
     if (selectedNodes.length < 2) return
@@ -341,7 +380,6 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
       return { ...node, position: { ...node.position, x: originX + (index % columns) * (maxWidth + gap), y: originY + Math.floor(index / columns) * (maxHeight + gap) } }
     }))
   }
-
   const duplicateSelectedNodes = () => {
     if (!selectedNodes.length) return
     const copies = selectedNodes.map((node) => ({ ...node, id: `${node.type}-${crypto.randomUUID()}`, position: { x: node.position.x + 36, y: node.position.y + 36 }, selected: true }))
@@ -526,12 +564,14 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   }, [canvasPanning])
 
   const onSelectionStart = () => {
+    setBoxSelectionActive(false)
     selectionGestureRef.current = true
     suppressAddMenuUntilRef.current = Date.now() + 500
     setMenu(null)
   }
 
   const onSelectionEnd = () => {
+    setBoxSelectionActive(true)
     selectionGestureRef.current = false
     suppressAddMenuUntilRef.current = Date.now() + 500
   }
@@ -624,8 +664,11 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     setSelectionGenerateMenu(null)
   }
 
-  return <section ref={stageRef} className={`canvas-stage ${commentMode ? 'comment-mode' : ''} ${presentationMode ? 'presentation-mode' : ''} ${readOnly ? 'read-only-share' : ''} ${knowledgePreview ? 'has-knowledge-preview' : ''} ${selectionDragPosition ? 'selection-connecting' : ''} ${canvasPanning ? 'is-canvas-panning' : ''}`} onMouseDownCapture={onStageMouseDownCapture} onMouseMoveCapture={onStageMouseMoveCapture} onMouseUpCapture={onStageMouseUpCapture} onDoubleClickCapture={openMenuAtCursor} onContextMenuCapture={(event) => {
-    if (interactionLocked) {
+  return <section ref={stageRef} className={`canvas-stage ${commentMode ? 'comment-mode' : ''} ${presentationMode ? 'presentation-mode' : ''} ${readOnly ? 'read-only-share' : ''} ${knowledgePreview ? 'has-knowledge-preview' : ''} ${(boxSelectionActive || selectedNodes.length > 1) && selectedNodes.length ? 'has-box-selection' : ''} ${selectionDragPosition ? 'selection-connecting' : ''} ${canvasPanning ? 'is-canvas-panning' : ''}`} onMouseDownCapture={onStageMouseDownCapture} onMouseMoveCapture={onStageMouseMoveCapture} onMouseUpCapture={onStageMouseUpCapture} onDoubleClickCapture={openMenuAtCursor} onContextMenuCapture={(event) => {
+    // Shared links are read-only, but their nodes can still expose the
+    // viewing menu (focus, preview, and copy). Presentation mode and agent
+    // target selection remain fully locked.
+    if (presentationMode || modificationTargetIds !== undefined) {
       event.preventDefault()
       event.stopPropagation()
       return
@@ -635,19 +678,22 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     if ((event.target as Element).closest('.react-flow__node')) return
     event.preventDefault()
   }}>
-    <ReactFlow nodes={flowNodes} edges={flowEdges} nodeTypes={canvasNodeTypes} edgeTypes={edgeTypes} connectionMode={ConnectionMode.Loose} defaultViewport={storedViewportRef.current ?? { x: 0, y: 0, zoom: 1 }} noPanClassName="canvas-pan-never-block" onInit={restoreStoredViewport} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onSelectionStart={onSelectionStart} onSelectionEnd={onSelectionEnd} onNodeClick={(_, node) => { if (suppressNodeClickRef.current) { suppressNodeClickRef.current = false; return } if (modificationTargetIds) { onToggleModificationTarget?.(node.id); return } if (!nodeInteractionsLocked) setFocusedNodeId(node.id) }} onNodeDragStart={onNodeDragStart} onNodeDragStop={onNodeDragStop} onConnect={onConnect} onConnectStart={onConnectStart} onConnectEnd={onConnectEnd} isValidConnection={isValidConnection} onEdgeClick={(_, edge) => { if (!nodeInteractionsLocked) setEdges((current) => current.map((item) => ({ ...item, selected: item.id === edge.id }))) }} onNodeDoubleClick={(_, node) => { if (!nodeInteractionsLocked && !commentMode && node.type !== 'agent') { closeMenu(); setActiveNodeId(node.id) } }} onPaneClick={(event) => { if (nodeInteractionsLocked) return; if (commentMode) onAddComment(screenToFlowPosition({ x: event.clientX, y: event.clientY })); else { setActiveNodeId(null); setFocusedNodeId(null); setEdges((current) => current.map((item) => ({ ...item, selected: false }))) } }} onMoveStart={onMoveStart} onMove={onMove} onMoveEnd={onMoveEnd} fitView zoomOnDoubleClick={false} zoomOnScroll={false} panOnScroll panOnScrollSpeed={1.5} zoomOnPinch minZoom={0.2} maxZoom={2} connectionRadius={110} snapToGrid={snapToGrid} snapGrid={[20, 20]} nodesConnectable={!commentMode && !nodeInteractionsLocked} nodesDraggable={!nodeInteractionsLocked} elementsSelectable={!nodeInteractionsLocked} panOnDrag={[2]} selectionOnDrag={!nodeInteractionsLocked} selectionMode={SelectionMode.Partial} defaultEdgeOptions={{ style: { stroke: '#73869a', strokeWidth: 2.5 } }} deleteKeyCode={nodeInteractionsLocked ? null : ['Backspace', 'Delete']} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" proOptions={{ hideAttribution: true }} aria-label="节点式创意策划画布">
+    <CanvasNodeReadOnlyContext.Provider value={readOnly}>
+    <ReactFlow nodes={flowNodes} edges={flowEdges} nodeTypes={canvasNodeTypes} edgeTypes={edgeTypes} connectionMode={ConnectionMode.Loose} defaultViewport={storedViewportRef.current ?? { x: 0, y: 0, zoom: 1 }} noPanClassName="canvas-pan-never-block" onInit={restoreStoredViewport} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onSelectionStart={onSelectionStart} onSelectionEnd={onSelectionEnd} onNodeClick={(_, node) => { setBoxSelectionActive(false); if (suppressNodeClickRef.current) { suppressNodeClickRef.current = false; return } if (modificationTargetIds) { onToggleModificationTarget?.(node.id); return } if (!nodeInteractionsLocked) setFocusedNodeId(node.id) }} onNodeDragStart={onNodeDragStart} onNodeDragStop={onNodeDragStop} onConnect={onConnect} onConnectStart={onConnectStart} onConnectEnd={onConnectEnd} isValidConnection={isValidConnection} onEdgeClick={(_, edge) => { if (!nodeInteractionsLocked) setEdges((current) => current.map((item) => ({ ...item, selected: item.id === edge.id }))) }} onNodeDoubleClick={(_, node) => { if (!activeNodeExecutionLocked && !nodeInteractionsLocked && !commentMode) { closeMenu(); setActiveNodeId(node.id) } }} onPaneClick={(event) => { if (activeNodeExecutionLocked || nodeInteractionsLocked) return; setBoxSelectionActive(false); if (commentMode) onAddComment(screenToFlowPosition({ x: event.clientX, y: event.clientY })); else { setActiveNodeId(null); setFocusedNodeId(null); setEdges((current) => current.map((item) => ({ ...item, selected: false }))) } }} onMoveStart={onMoveStart} onMove={onMove} onMoveEnd={onMoveEnd} zoomOnDoubleClick={false} zoomOnScroll={false} panOnScroll panOnScrollSpeed={1.5} zoomOnPinch minZoom={0.2} maxZoom={2} connectionRadius={110} snapToGrid={snapToGrid} snapGrid={[20, 20]} nodesConnectable={!commentMode && !nodeInteractionsLocked} nodesDraggable={!nodeInteractionsLocked} elementsSelectable={!nodeInteractionsLocked} panOnDrag={[2]} selectionOnDrag={!nodeInteractionsLocked} selectionMode={SelectionMode.Partial} defaultEdgeOptions={{ style: { stroke: '#73869a', strokeWidth: 2.5 } }} deleteKeyCode={nodeInteractionsLocked || activeNodeExecutionLocked ? null : ['Backspace', 'Delete']} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" proOptions={{ hideAttribution: true }} aria-label="节点式创意策划画布">
       <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color="#70747a" />
       {showMiniMap && <MiniMap position="bottom-left" className="canvas-minimap" pannable zoomable onClick={(_, point) => { void setCenter(point.x, point.y, { zoom: zoom / 100, duration: 260 }) }} nodeColor={(node) => node.type === 'image' ? '#426e7a' : node.type === 'file' ? '#756347' : '#5b526f'} maskColor="rgba(8, 9, 11, 0.72)" />}
       <CanvasTopbar readOnly={readOnly} viewMode={viewMode} onViewModeChange={setViewMode} onShare={() => setShareOpen((value) => !value)} shareOpen={shareOpen} shareMessage={shareMessage} onCopyShareLink={() => void copyReadOnlyLink()} onDownloadImage={() => void downloadCanvasImage()} onSearch={() => setSearchOpen(true)} presentationMode={presentationMode} onTogglePresentation={() => void togglePresentation()} leftCollapsed={leftCollapsed} agentCollapsed={agentCollapsed} onToggleAgent={onToggleAgent} />
-      {!readOnly && <CanvasDock onAdd={() => setMenu({ mode: 'add' })} commentMode={commentMode} onToggleComment={() => { setCommentMode((value) => !value); setActiveNodeId(null) }} canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} />}
+      {!readOnly && <CanvasDock onAdd={() => setMenu({ mode: 'add' })} commentMode={commentMode} onToggleComment={() => { if (activeNodeExecutionLocked) return; setCommentMode((value) => !value); setActiveNodeId(null) }} onHistory={() => setHistoryOpen(true)} canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} />}
       <ViewportControls readOnly={readOnly} zoom={zoom} miniMapVisible={showMiniMap} snapToGrid={snapToGrid} hideEdges={hideEdges} onChangeZoom={changeZoom} onToggleMiniMap={() => setShowMiniMap((value) => !value)} onToggleSnap={() => setSnapToGrid((value) => !value)} onToggleEdges={() => setHideEdges((value) => !value)} onReset={() => void fitView({ duration: 180, padding: 0.22 })} />
-      {!modificationTargetIds && selectedNodes.length > 1 && <NodeToolbar nodeId={selectedNodeIds} position={Position.Top} align="center" isVisible className="selection-toolbar"><button aria-label="打组"><FolderPlus size={16} /><span>打组</span></button><span className="selection-toolbar-divider" /><button aria-label="宫格排列" title="宫格排列" onClick={() => arrangeSelectedNodes('grid')}><Grid2X2 size={16} /><span>宫格</span></button><button aria-label="水平排列" title="水平排列" onClick={() => arrangeSelectedNodes('horizontal')}><AlignHorizontalSpaceAround size={16} /><span>水平</span></button><button aria-label="垂直排列" title="垂直排列" onClick={() => arrangeSelectedNodes('vertical')}><AlignVerticalSpaceAround size={16} /><span>垂直</span></button><button aria-label="创建副本" title="创建副本" onClick={duplicateSelectedNodes}><Copy size={16} /><span>副本</span></button><span className="selection-toolbar-divider" /><button className="selection-delete-button" aria-label="删除选中节点" title="删除选中节点" onClick={() => void deleteElements({ nodes: selectedNodeIds.map((id) => ({ id })) })}><Trash2 size={16} /><span>删除</span></button></NodeToolbar>}
-      {activeNode && <NodeToolbar nodeId={activeNode.id} position={Position.Bottom} align="center" isVisible className="node-chat-panel"><NodeChatComposer key={activeNode.id} nodeTitle={activeNode.data.title} nodes={nodes} onClose={() => setActiveNodeId(null)} onSend={(prompt, model) => onChatAnswer(activeNode.id, prompt, model)} /></NodeToolbar>}
+      {!modificationTargetIds && (selectedNodes.length > 1 || (boxSelectionActive && selectedNodes.length === 1)) && <NodeToolbar nodeId={selectedNodeIds} position={Position.Top} align="center" isVisible className="selection-toolbar">{selectedNodes.length > 1 && <><button aria-label="打组"><FolderPlus size={16} /><span>打组</span></button><span className="selection-toolbar-divider" /><button aria-label="宫格排列" title="宫格排列" onClick={() => arrangeSelectedNodes('grid')}><Grid2X2 size={16} /><span>宫格</span></button><button aria-label="水平排列" title="水平排列" onClick={() => arrangeSelectedNodes('horizontal')}><AlignHorizontalSpaceAround size={16} /><span>水平</span></button><button aria-label="垂直排列" title="垂直排列" onClick={() => arrangeSelectedNodes('vertical')}><AlignVerticalSpaceAround size={16} /><span>垂直</span></button><span className="selection-toolbar-divider" /></>}<button aria-label="创建副本" title="创建副本" onClick={duplicateSelectedNodes}><Copy size={16} /><span>副本</span></button><span className="selection-toolbar-divider" /><button className="selection-delete-button" aria-label="删除选中节点" title="删除选中节点" onClick={() => void deleteElements({ nodes: selectedNodeIds.map((id) => ({ id })) })}><Trash2 size={16} /><span>删除</span></button></NodeToolbar>}
+      {activeNode && <NodeToolbar nodeId={activeNode.id} position={Position.Bottom} align="center" isVisible className="node-chat-panel"><NodeChatComposer key={activeNode.id} nodeTitle={activeNode.data.title} nodes={nodes} runStatus={activeNode.data.agentStatus} runSummary={activeNode.data.agentSummary} onClose={() => { if (!activeNodeExecutionLocked) setActiveNodeId(null) }} onSend={(prompt, model, options, actionMode, _assistantMode, signal, onProgress) => { setChatHistory((current) => [{ id: crypto.randomUUID(), category: actionMode === 'agent' ? 'agent' : activeNode.type, title: activeNode.data.title, prompt, createdAt: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }, ...current]); if (actionMode === 'agent') return onAgentRun(activeNode.id, prompt, model, options, signal); return onChatAnswer(activeNode.id, prompt, model, onProgress, signal) }} /></NodeToolbar>}
     </ReactFlow>
+    </CanvasNodeReadOnlyContext.Provider>
     {searchOpen && <div className="node-search-overlay" onMouseDown={() => setSearchOpen(false)}><div className="node-search-dialog" onMouseDown={(event) => event.stopPropagation()}><div className="node-search-input"><Search size={18} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={onSearchKeyDown} placeholder="搜索节点…" /></div><div className="node-search-results">{searchResults.map((node, index) => <button key={node.id} className={index === highlightedSearchIndex ? 'highlighted' : ''} aria-selected={index === highlightedSearchIndex} onMouseEnter={() => setHighlightedSearchIndex(index)} onClick={() => chooseSearchResult(node)}><span>{node.data.title}</span><small>{node.type}</small></button>)}</div></div></div>}
-    {menu && <AddNodeMenu title={menu.mode === 'context' ? '添加上下文' : menu.mode === 'reference' ? '引用该节点生成' : '添加节点'} showAgent={menu.mode !== 'context'} showImage={menu.mode !== 'context'} location={menu.screenPosition} onText={() => onAddText(menu.canvasPosition, connectCreatedNode)} onImage={() => onAddImage(menu.canvasPosition, connectCreatedNode)} onFile={() => onAddFile(menu.canvasPosition, connectCreatedNode)} onAgent={() => onAddAgent(menu.canvasPosition, connectCreatedNode)} onClose={closeMenu} />}
-    {selectionGenerateMenu && <AddNodeMenu title="引用该节点生成" location={selectionGenerateMenu.screenPosition} onText={() => onAddText(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onImage={() => onAddImage(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onFile={() => onAddFile(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onAgent={() => onAddAgent(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onClose={() => setSelectionGenerateMenu(null)} />}
+    {menu && <AddNodeMenu title={menu.mode === 'context' ? '添加上下文' : menu.mode === 'reference' ? '引用该节点生成' : '添加节点'} showImage={menu.mode !== 'context'} location={menu.screenPosition} onText={() => onAddText(menu.canvasPosition, connectCreatedNode)} onImage={() => onAddImage(menu.canvasPosition, connectCreatedNode)} onFile={() => onAddFile(menu.canvasPosition, connectCreatedNode)} onClose={closeMenu} />}
+    {selectionGenerateMenu && <AddNodeMenu title="引用该节点生成" location={selectionGenerateMenu.screenPosition} onText={() => onAddText(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onImage={() => onAddImage(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onFile={() => onAddFile(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onClose={() => setSelectionGenerateMenu(null)} />}
     {knowledgePreview && <KnowledgePreview item={knowledgePreview} onClose={onCloseKnowledgePreview} />}
+    {historyOpen && <div className="canvas-history-overlay" onMouseDown={() => setHistoryOpen(false)}><section className="canvas-history-dialog" role="dialog" aria-label="聊天历史" onMouseDown={(event) => event.stopPropagation()}><header><strong>聊天历史</strong><div className="canvas-history-header-actions"><button onClick={() => void clearChatHistory()} disabled={!chatHistory.length} aria-label="清空聊天历史" title="清空聊天历史"><Trash2 size={14} /></button><button onClick={() => setHistoryOpen(false)} aria-label="关闭聊天历史" title="关闭"><X size={16} /></button></div></header><nav>{(['all', 'text', 'image', 'agent', 'file', 'comment'] as const).map((type) => <button key={type} className={historyFilter === type ? 'active' : ''} onClick={() => setHistoryFilter(type)}>{type === 'all' ? '全部' : type === 'text' ? '文本' : type === 'image' ? '图片' : type === 'agent' ? 'Agent' : type === 'file' ? '文件' : '备注'}</button>)}</nav><div className="canvas-history-list">{chatHistory.filter((item) => historyFilter === 'all' || item.category === historyFilter).map((item) => <article key={item.id}><div className="canvas-history-entry-header"><small>{item.category === 'agent' ? 'Agent' : item.category} · {item.createdAt}</small><button className="canvas-history-copy" onClick={() => void copyHistoryEntry(item)} aria-label={copiedHistoryId === item.id ? '已复制聊天记录' : '复制聊天记录'} title={copiedHistoryId === item.id ? '已复制' : '复制'}>{copiedHistoryId === item.id ? '已复制' : <Copy size={14} />}</button></div><strong>{item.title || '未命名节点'}</strong><p>{item.prompt}</p></article>)}{chatHistory.filter((item) => historyFilter === 'all' || item.category === historyFilter).length === 0 && <p>暂无该分类的聊天记录。</p>}</div></section></div>}
   </section>
 }
 
@@ -699,5 +745,5 @@ function nearestHandle(rect: DOMRect, point: { x: number; y: number }) {
 }
 
 function CanvasTopbar({ readOnly, viewMode, onViewModeChange, onShare, shareOpen, shareMessage, onCopyShareLink, onDownloadImage, onSearch, presentationMode, onTogglePresentation, leftCollapsed, agentCollapsed, onToggleAgent }: { readOnly: boolean; viewMode: 'workflow' | 'storyboard'; onViewModeChange: (mode: 'workflow' | 'storyboard') => void; onShare: () => void; shareOpen: boolean; shareMessage: string; onCopyShareLink: () => void; onDownloadImage: () => void; onSearch: () => void; presentationMode: boolean; onTogglePresentation: () => void; leftCollapsed: boolean; agentCollapsed: boolean; onToggleAgent: () => void }) { const { setManagerOpen, tokenUsage } = useModelRegistry(); const totalTokens = tokenUsage.reduce((sum, usage) => sum + usage.totalTokens, 0); return <Panel position="top-center" className="canvas-topbar"><div className="topbar-left">{!readOnly && leftCollapsed && <FloatingButtonGroup className="left-collapsed-button"><div className="collapsed-workspace-bar"><BrandLogo /><span className="collapsed-canvas-divider" /><button className="collapsed-canvas-switcher">画布 1<ChevronDown size={14} /></button></div></FloatingButtonGroup>}{!readOnly && <FloatingButtonGroup className="view-switcher"><button className={viewMode === 'workflow' ? 'active' : ''} onClick={() => onViewModeChange('workflow')}><Workflow size={15} />工作流</button><button className={viewMode === 'storyboard' ? 'active' : ''} onClick={() => onViewModeChange('storyboard')}><BoxSelect size={15} />故事板</button></FloatingButtonGroup>}</div><div className="topbar-right"><FloatingButtonGroup className="canvas-actions"><div className="share-menu"><button aria-label="分享" onClick={onShare}><Share2 size={16} /></button>{shareOpen && <div className="share-popover"><strong>分享画布</strong><button onClick={onCopyShareLink}>复制只读链接</button><button onClick={onDownloadImage}>下载图片</button>{shareMessage && <small>{shareMessage}</small>}</div>}</div>{!readOnly && <button className="token-counter" aria-label="管理大模型与 Token 用量" onClick={() => setManagerOpen(true)}>{formatTokenCount(totalTokens)} Tokens</button>}<button aria-label="搜索节点" onClick={onSearch}><Search size={16} /></button></FloatingButtonGroup>{!readOnly && <button className="presentation-toggle" onClick={onTogglePresentation} aria-label={presentationMode ? "退出全屏预览" : "全屏预览"}>{presentationMode ? <Minimize2 size={16} /> : <Eye size={16} />}</button>}{!readOnly && agentCollapsed && <FloatingButtonGroup className="agent-collapsed-button"><button onClick={onToggleAgent} aria-label="展开 Agent"><Bot size={16} />Agent</button></FloatingButtonGroup>}</div></Panel> }
-function CanvasDock({ onAdd, commentMode, onToggleComment, canUndo, canRedo, onUndo, onRedo }: { onAdd: () => void; commentMode: boolean; onToggleComment: () => void; canUndo: boolean; canRedo: boolean; onUndo: () => void; onRedo: () => void }) { return <Panel position="bottom-center" className="canvas-dock"><FloatingButtonGroup><button className="add-primary" onClick={onAdd} aria-label="添加节点"><Plus size={22} /></button><button className={commentMode ? 'active comment-tool' : 'comment-tool'} onClick={onToggleComment} aria-label={commentMode ? '退出备注模式' : '进入备注模式'}><MessageSquareText size={18} /></button><button aria-label="自动布局"><Workflow size={18} /></button><span className="dock-divider" /><button onClick={onUndo} disabled={!canUndo} aria-label="撤回上一步" title="撤回上一步（⌘Z）"><Undo2 size={18} /></button><button onClick={onRedo} disabled={!canRedo} aria-label="下一步" title="下一步（⇧⌘Z）"><Redo2 size={18} /></button><span className="dock-divider" /><button aria-label="快捷键"><Command size={18} /></button><button aria-label="帮助"><CircleHelp size={18} /></button></FloatingButtonGroup></Panel> }
+function CanvasDock({ onAdd, commentMode, onToggleComment, onHistory, canUndo, canRedo, onUndo, onRedo }: { onAdd: () => void; commentMode: boolean; onToggleComment: () => void; onHistory: () => void; canUndo: boolean; canRedo: boolean; onUndo: () => void; onRedo: () => void }) { return <Panel position="bottom-center" className="canvas-dock"><FloatingButtonGroup><button className="add-primary" onClick={onAdd} aria-label="添加节点"><Plus size={22} /></button><button className={commentMode ? 'active comment-tool' : 'comment-tool'} onClick={onToggleComment} aria-label={commentMode ? '退出备注模式' : '进入备注模式'}><MessageSquareText size={18} /></button><span className="dock-divider" /><button onClick={onUndo} disabled={!canUndo} aria-label="撤回上一步" title="撤回上一步（⌘Z）"><Undo2 size={18} /></button><button onClick={onRedo} disabled={!canRedo} aria-label="下一步" title="下一步（⇧⌘Z）"><Redo2 size={18} /></button><button onClick={onHistory} aria-label="聊天历史"><History size={16} /></button></FloatingButtonGroup></Panel> }
 function ViewportControls({ readOnly, zoom, miniMapVisible, snapToGrid, hideEdges, onChangeZoom, onToggleMiniMap, onToggleSnap, onToggleEdges, onReset }: { readOnly: boolean; zoom: number; miniMapVisible: boolean; snapToGrid: boolean; hideEdges: boolean; onChangeZoom: (value: number) => void; onToggleMiniMap: () => void; onToggleSnap: () => void; onToggleEdges: () => void; onReset: () => void }) { return <Panel position="bottom-left" className="viewport-controls"><FloatingButtonGroup><button className={miniMapVisible ? 'active' : ''} onClick={onToggleMiniMap} aria-label="显示或隐藏小地图"><Map size={19} /></button>{!readOnly && <button className={snapToGrid ? 'active' : ''} onClick={onToggleSnap} aria-label="切换网格吸附"><Grid3X3 size={19} /></button>}<button onClick={onReset} aria-label="完整显示全部节点"><LocateFixed size={19} /></button><button className={hideEdges ? 'active' : ''} onClick={onToggleEdges} aria-label="隐藏连接线"><Link2 size={19} /></button><span className="viewport-divider" /><input type="range" min="20" max="200" value={zoom} onChange={(event) => onChangeZoom(Number(event.target.value))} aria-label="画布缩放" /></FloatingButtonGroup></Panel> }

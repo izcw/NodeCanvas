@@ -72,7 +72,7 @@ export const initialNodes: CanvasNode[] = [
     data: { title: '社媒发布组合｜一套内容多次复用', content: '小红书：桌搭图文 + “为什么换磁轴”的体验笔记。\n抖音：30 秒主片 + 15 秒按键细节切片。\nB 站：磁轴体验与游戏实测长视频。\n微博：主视觉海报 + #把速度放上桌# 话题。\n\n每条内容统一导向产品页与用户晒单。' },
   },
   {
-    id: 'campaign-1', type: 'agent', position: { x: 3500, y: 470 }, style: { width: 470, height: 360 },
+    id: 'campaign-1', type: 'text', position: { x: 3500, y: 470 }, style: { width: 470, height: 360 },
     data: { title: '完整内容营销方案', content: '目标：建立这款键盘的产品认知、体验信任与社媒讨论。\n\n传播主线：把速度放上桌。\n内容支柱：轻盈上桌 / 快到先一步 / 不羁风范。\n\n交付：1 支 30 秒主片、3 支卖点切片、1 组桌搭图文、1 条磁轴实测、1 个用户晒单话题。\n\n衡量：完播率、收藏率、评论中的“磁轴/手感/速度”提及率，以及产品页点击。' },
   },
 ]

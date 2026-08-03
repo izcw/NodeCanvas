@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 NodeKind = Literal["text", "image", "file", "comment", "agent"]
 GenerationType = Literal["文本", "图片", "文档"]
 ModelProtocol = Literal["openai-chat", "dashscope-image"]
-OperationMode = Literal["agent", "update_source"]
+OperationMode = Literal["agent", "update_source", "chat"]
 ResponseLanguage = Literal["zh-CN", "en-US"]
 
 
@@ -71,6 +71,7 @@ class ModelConnection(BaseModel):
 
 
 class AgentRunRequest(BaseModel):
+    client_run_id: str | None = Field(default=None, max_length=120)
     source_node_id: str
     prompt: str = Field(min_length=1, max_length=12_000)
     model: str = "Kimi K2"
@@ -100,6 +101,7 @@ class ContextSnapshot(BaseModel):
     source_node_id: str
     goal: str
     direct_inputs: list[ContextItem]
+    focus_node: ContextItem | None = None
     current_node: ContextItem | None = None
     knowledge: list[str] = Field(default_factory=list)
     response_language: ResponseLanguage = "zh-CN"

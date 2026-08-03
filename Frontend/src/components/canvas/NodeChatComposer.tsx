@@ -4,15 +4,18 @@ import {
   Check,
   ChevronDown,
   CornerDownLeft,
-  File,
   FileText,
   Image as ImageIcon,
   Layers3,
-  Plus,
+  MessageCircle,
+  Pause,
+  ShieldCheck,
   Sparkles,
+  Zap,
   X,
 } from "lucide-react";
 import { FormEvent, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { AgentRunOptions, CanvasNode, ModelConfig } from "../../types/canvas";
 import { NodeSelect } from "./NodeSelect";
 import { useModelRegistry } from "../../features/models/ModelRegistryContext";
@@ -20,21 +23,55 @@ import { useModelRegistry } from "../../features/models/ModelRegistryContext";
 type NodeChatComposerProps = {
   nodeTitle: string;
   onClose?: () => void;
-  onSend: (prompt: string, model: ModelConfig, options: AgentRunOptions) => void | Promise<void | string[]>;
+  onSend: (prompt: string, model: ModelConfig, options: AgentRunOptions, actionMode: "modify" | "agent", assistantMode: AssistantMode, signal?: AbortSignal, onProgress?: (content: string, type: 'content' | 'reasoning') => void) => void | Promise<void | string[]>;
   nodes: CanvasNode[];
-  mode?: "node" | "agent";
+  defaultActionMode?: "modify" | "agent";
+  showActionMode?: boolean;
+  showAgentGenerationControls?: boolean;
+  showAssistantMode?: boolean;
+  portalSelects?: boolean;
   runStatus?: 'idle' | 'running' | 'completed' | 'failed';
   runSummary?: string[];
+  isExecuting?: boolean;
+  onStop?: () => void;
 };
+
+export type AssistantMode = "manual" | "auto" | "ask";
+
+function takeStreamLine(buffer: string, force = false) {
+  const leadingTrimmed = buffer.replace(/^\s+/, '');
+  if (!leadingTrimmed) return null;
+  const punctuationIndex = leadingTrimmed.search(/[。！？!?；;\n]/);
+  const cutAt = punctuationIndex >= 0 && punctuationIndex < 44
+    ? punctuationIndex + 1
+    : leadingTrimmed.length >= 36
+      ? 36
+      : force
+        ? leadingTrimmed.length
+        : 0;
+  if (!cutAt) return null;
+  const rawLine = leadingTrimmed.slice(0, cutAt);
+  const line = rawLine
+    .replace(/\s+/g, ' ')
+    .replace(/^[#>*`_~-]+\s*/, '')
+    .trim();
+  return { line, rest: leadingTrimmed.slice(cutAt) };
+}
 
 export function NodeChatComposer({
   nodeTitle,
   onClose,
   onSend,
   nodes,
-  mode = "node",
+  defaultActionMode = "modify",
+  showActionMode = true,
+  showAgentGenerationControls = true,
+  showAssistantMode = false,
+  portalSelects = false,
   runStatus = 'idle',
   runSummary = [],
+  isExecuting = false,
+  onStop,
 }: NodeChatComposerProps) {
   const { models } = useModelRegistry();
   const [prompt, setPrompt] = useState("");
@@ -45,31 +82,47 @@ export function NodeChatComposer({
   const [mentionStart, setMentionStart] = useState(-1);
   const [highlightedMentionIndex, setHighlightedMentionIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<string[]>([]);
-  const [generationType, setGenerationType] = useState("文本");
+  const [actionMode, setActionMode] = useState<"modify" | "agent">(defaultActionMode);
+  const [assistantMode, setAssistantMode] = useState<AssistantMode>("ask");
+  const [generationType, setGenerationType] = useState<AgentRunOptions['generationType']>("自动");
   const [generationMenuOpen, setGenerationMenuOpen] = useState(false);
   const [cardMenuOpen, setCardMenuOpen] = useState(false);
   const [resultGrid, setResultGrid] = useState({ rows: 1, columns: 1 });
   const [hoveredGrid, setHoveredGrid] = useState({ rows: 1, columns: 1 });
   const [localRunStatus, setLocalRunStatus] = useState<'idle' | 'running' | 'completed' | 'failed'>('idle');
   const [localSummary, setLocalSummary] = useState<string[]>([]);
+  const [localExecuting, setLocalExecuting] = useState(false);
+  const requestControllerRef = useRef<AbortController | null>(null);
+  const submittedPromptRef = useRef("");
   const generationPickerRef = useRef<HTMLDivElement>(null);
   const cardCountPickerRef = useRef<HTMLDivElement>(null);
   const pendingCaretRef = useRef<number | null>(null);
   const inputRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const inputWrapRef = useRef<HTMLDivElement>(null);
-  const isAgent = mode === "agent";
-  const effectiveRunStatus = isAgent ? runStatus : localRunStatus;
+  const mentionMenuRef = useRef<HTMLDivElement>(null);
+  const [mentionMenuPosition, setMentionMenuPosition] = useState({ x: 0, y: 0 });
+  const isAgent = actionMode === "agent";
+  const executing = isExecuting || localExecuting;
+  const effectiveRunStatus = executing ? 'running' : isAgent ? runStatus : localRunStatus;
+  const closeLocked = effectiveRunStatus === 'running';
   const executionSummary = isAgent ? runSummary : localSummary;
-  const compatibleModels = models.filter((item) => generationType === '图片' ? item.capabilities.includes('image') : !item.capabilities.includes('image'));
+  const compatibleModels = models.filter((item) => {
+    if (!isAgent) return !item.capabilities.includes('image');
+    if (generationType === '自动') return true;
+    return generationType === '图片' ? item.capabilities.includes('image') : !item.capabilities.includes('image');
+  });
   const selectedModel = compatibleModels.find((item) => item.id === modelId) ?? compatibleModels[0] ?? models[0];
+
+  useEffect(() => () => {
+    requestControllerRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (selectedModel && selectedModel.id !== modelId) setModelId(selectedModel.id);
   }, [modelId, selectedModel]);
 
   useEffect(() => {
-    if (isAgent) return;
     const frame = requestAnimationFrame(() => {
       const editor = inputRef.current;
       if (!editor) return;
@@ -126,7 +179,8 @@ export function NodeChatComposer({
   useEffect(() => {
     if (!mentionOpen) return;
     const closeOnOutside = (event: MouseEvent) => {
-      if (!inputWrapRef.current?.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (!inputWrapRef.current?.contains(target) && !mentionMenuRef.current?.contains(target)) {
         setMentionOpen(false);
       }
     };
@@ -134,36 +188,127 @@ export function NodeChatComposer({
     return () => document.removeEventListener("mousedown", closeOnOutside);
   }, [mentionOpen, cardMenuOpen]);
 
+  useEffect(() => {
+    if (!mentionOpen) return;
+    let frame = 0;
+    const syncPosition = () => {
+      const input = inputWrapRef.current;
+      if (input) {
+        const bounds = input.getBoundingClientRect();
+        const width = 250;
+        const height = Math.min(220, window.innerHeight - 16);
+        const nextPosition = {
+          x: Math.min(Math.max(8, bounds.left), Math.max(8, window.innerWidth - width - 8)),
+          y: Math.min(Math.max(8, bounds.top - height + 2), Math.max(8, window.innerHeight - height - 8)),
+        };
+        setMentionMenuPosition((current) => current.x === nextPosition.x && current.y === nextPosition.y ? current : nextPosition);
+      }
+      frame = window.requestAnimationFrame(syncPosition);
+    };
+    syncPosition();
+    return () => window.cancelAnimationFrame(frame);
+  }, [mentionOpen]);
+
   const send = async (event?: FormEvent) => {
     event?.preventDefault();
+    if (effectiveRunStatus === 'running') return;
     const value = prompt.trim();
     if (!value) return;
     if (!selectedModel) return;
-    setPrompt("");
-    if (inputRef.current) inputRef.current.textContent = "";
+    const visualIntent = /(?:生成|制作|创建|画|设计).{0,8}(?:图片|图像|插画|海报|封面|视觉|效果图|logo|icon)|(?:图片|图像|插画|海报|封面|视觉|效果图).{0,8}(?:生成|制作|创建|设计)/i.test(value);
+    const executionModel = generationType === '自动'
+      ? visualIntent
+        ? models.find((item) => item.protocol === 'dashscope-image' && item.apiKey) ?? selectedModel
+        : models.find((item) => item.protocol === 'openai-chat' && item.apiKey) ?? models.find((item) => item.protocol === 'openai-chat') ?? selectedModel
+      : selectedModel;
+    const controller = new AbortController();
+    submittedPromptRef.current = value;
+    requestControllerRef.current?.abort();
+    requestControllerRef.current = controller;
+    setLocalExecuting(true);
+    let streamBuffer = "";
+    let displayedStreamLines: string[] = [];
+    let currentStreamType: 'content' | 'reasoning' | null = null;
+    let streamLineTimer: number | null = null;
+    const publishNextStreamLine = (force = false) => {
+      const next = takeStreamLine(streamBuffer, force);
+      if (!next) return false;
+      streamBuffer = next.rest;
+      if (next.line) {
+        displayedStreamLines = [...displayedStreamLines, next.line].slice(-3);
+        setLocalSummary(displayedStreamLines);
+      }
+      return true;
+    };
     if (!isAgent) {
       setLocalRunStatus('running');
-      setLocalSummary(['正在理解修改要求…', `正在优化「${nodeTitle}」的内容…`]);
+      setLocalSummary(['正在等待模型开始流式输出…']);
+      streamLineTimer = window.setInterval(() => publishNextStreamLine(), 520);
     }
     try {
-      const resultSummary = await onSend(value, selectedModel, {
-        generationType: generationType as AgentRunOptions['generationType'],
+      const resultSummary = await onSend(value, executionModel, {
+        generationType,
         grid: resultGrid,
+      }, actionMode, assistantMode, controller.signal, (chunk, type) => {
+        if (isAgent) return;
+        if (currentStreamType && currentStreamType !== type && streamBuffer.trim()) streamBuffer += '。';
+        currentStreamType = type;
+        streamBuffer += chunk;
       });
+      if (controller.signal.aborted) {
+        setLocalRunStatus('idle');
+        setLocalSummary(['已暂停执行。']);
+        window.setTimeout(() => setLocalSummary([]), 1800);
+        return;
+      }
+      setPrompt("");
+      setSelectedMentions([]);
+      setMentionOpen(false);
+      if (inputRef.current) inputRef.current.textContent = "";
       if (!isAgent) {
+        if (streamLineTimer !== null) window.clearInterval(streamLineTimer);
+        streamLineTimer = null;
+        let safety = 0;
+        while (streamBuffer.trim() && safety < 100) {
+          if (!publishNextStreamLine(true)) break;
+          safety += 1;
+        }
         setLocalRunStatus('completed');
-        setLocalSummary(resultSummary?.slice(0, 3) ?? ['已完成要求解析与内容更新。', `「${nodeTitle}」已写入最新结果。`]);
+        if (displayedStreamLines.length === 0) setLocalSummary(resultSummary?.slice(0, 3) ?? ['已完成要求解析与内容更新。']);
         window.setTimeout(() => {
           setLocalRunStatus('idle');
           setLocalSummary([]);
         }, 2400);
       }
     } catch (error) {
+      if (streamLineTimer !== null) window.clearInterval(streamLineTimer);
+      streamLineTimer = null;
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setLocalRunStatus('idle');
+        setLocalSummary(['已暂停执行。']);
+        window.setTimeout(() => setLocalSummary([]), 1800);
+        return;
+      }
       if (!isAgent) {
         setLocalRunStatus('failed');
         setLocalSummary([error instanceof Error ? error.message : '执行失败，请重试。']);
       }
+    } finally {
+      if (streamLineTimer !== null) window.clearInterval(streamLineTimer);
+      if (requestControllerRef.current === controller) requestControllerRef.current = null;
+      setLocalExecuting(false);
     }
+  };
+
+  const stopExecution = (event?: React.MouseEvent<HTMLButtonElement>) => {
+    event?.preventDefault();
+    event?.stopPropagation();
+    requestControllerRef.current?.abort();
+    if (!prompt.trim() && submittedPromptRef.current) {
+      setPrompt(submittedPromptRef.current);
+      if (inputRef.current) inputRef.current.textContent = submittedPromptRef.current;
+    }
+    onStop?.();
   };
 
   const getCaretOffset = (fallback = prompt.length) => {
@@ -212,6 +357,11 @@ export function NodeChatComposer({
   const mentionResults = nodes.filter((node) =>
     node.data.title.toLowerCase().includes(mentionQuery.toLowerCase()),
   );
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    mentionMenuRef.current?.querySelectorAll<HTMLButtonElement>("button")[highlightedMentionIndex]?.scrollIntoView({ block: "nearest" });
+  }, [highlightedMentionIndex, mentionOpen]);
 
   const decorateMentions = () => {
     const editor = inputRef.current;
@@ -328,7 +478,7 @@ export function NodeChatComposer({
 
   return (
     <form
-      className={`node-chat-composer ${isAgent ? "node-chat-composer--agent" : ""}`}
+      className={`node-chat-composer ${isAgent ? "is-agent-mode" : "is-modify-mode"}`}
       onSubmit={send}
     >
       <header>
@@ -339,11 +489,11 @@ export function NodeChatComposer({
               ? "Agent 正在读取上下文并生成结果…"
               : effectiveRunStatus === 'failed'
                 ? "Agent 执行失败，请检查后端或模型配置"
-                : "Agent：读取左侧上下文，输出到右侧"
+                : "Agent：生成、延展或修改分支内容"
             : `仅修改「${nodeTitle}」`}
         </span>
         {onClose && (
-          <button type="button" onClick={onClose} aria-label="关闭聊天节点">
+          <button type="button" onClick={() => { if (!closeLocked) onClose() }} disabled={closeLocked} aria-label={closeLocked ? "执行完成后可关闭聊天节点" : "关闭聊天节点"} title={closeLocked ? "正在执行，完成后才能关闭" : "关闭"}>
             <X size={15} />
           </button>
         )}
@@ -354,11 +504,11 @@ export function NodeChatComposer({
           className={`node-chat-editor ${prompt ? "" : "is-empty"}`}
           contentEditable
           suppressContentEditableWarning
-          autoFocus={!isAgent}
+          autoFocus
           role="textbox"
           aria-multiline="true"
           aria-label="聊天节点输入"
-          data-placeholder="描述任何你想生成、修改或延展的内容…"
+          data-placeholder={isAgent ? "描述想生成或延展的内容，也可以修改已延展内容…" : "描述你想如何修改当前节点内容…"}
           onInput={(event) => {
             const value = event.currentTarget.textContent ?? "";
             setPrompt(value);
@@ -419,11 +569,13 @@ export function NodeChatComposer({
             }
           }}
         />
-        {mentionOpen && mentionResults.length > 0 && (
+        {mentionOpen && mentionResults.length > 0 && createPortal(
           <div
-            className="node-mention-menu"
+            ref={mentionMenuRef}
+            className="node-mention-menu nowheel"
             role="listbox"
             aria-label="选择节点"
+            style={{ left: mentionMenuPosition.x, top: mentionMenuPosition.y }}
           >
             {mentionResults.map((node, index) => (
               <button
@@ -447,27 +599,27 @@ export function NodeChatComposer({
                         ? "图片节点"
                         : node.type === "file"
                           ? "文件节点"
-                          : node.type === "agent"
-                            ? "Agent 节点"
-                            : "备注节点"}
+                          : "备注节点"}
                   </small>
                 </span>
               </button>
             ))}
           </div>
-        )}
+        , document.body)}
       </div>
       <footer>
         <div>
-          <button
-            type="button"
-            className="chat-attachment"
-            aria-label="添加参考"
-          >
-            <Plus size={15} />
-          </button>
-          <NodeSelect value={selectedModel?.id ?? ''} ariaLabel="选择大模型" onChange={setModelId} options={compatibleModels.map((item) => ({ value: item.id, label: item.name, description: item.description, meta: item.apiKey ? '已配置' : '未配置', icon: item.capabilities.includes('reasoning') ? <BrainCircuit size={20} /> : item.capabilities.includes('image') ? <ImageIcon size={20} /> : item.capabilities.includes('vision') ? <Bot size={20} /> : <Sparkles size={20} /> }))} />
-          {isAgent && (
+          <NodeSelect portal={portalSelects} value={selectedModel?.id ?? ''} ariaLabel="选择大模型" onChange={setModelId} options={compatibleModels.map((item) => ({ value: item.id, label: item.name, description: item.description, meta: item.apiKey ? '已配置' : '未配置', icon: item.capabilities.includes('reasoning') ? <BrainCircuit size={20} /> : item.capabilities.includes('image') ? <ImageIcon size={20} /> : item.capabilities.includes('vision') ? <Bot size={20} /> : <Sparkles size={20} /> }))} />
+          {showActionMode && <NodeSelect value={actionMode} ariaLabel="选择操作模式" onChange={(value) => { setActionMode(value as "modify" | "agent"); setGenerationMenuOpen(false); setCardMenuOpen(false) }} options={[
+            { value: 'modify', label: '修改当前', description: '只修改当前节点内容', icon: <FileText size={20} /> },
+            { value: 'agent', label: 'Agent', description: '生成、延展或修改分支内容', icon: <Bot size={20} /> },
+          ]} />}
+          {showAssistantMode && <NodeSelect portal={portalSelects} value={assistantMode} ariaLabel="选择 Agent 执行模式" onChange={(value) => setAssistantMode(value as AssistantMode)} options={[
+            { value: 'manual', label: '手动确认', description: '生成前询问确认', icon: <ShieldCheck size={20} /> },
+            { value: 'auto', label: '自动生成', description: '完全自动生成', icon: <Zap size={20} /> },
+            { value: 'ask', label: 'Ask', description: '纯聊天，不修改画布', icon: <MessageCircle size={20} /> },
+          ]} />}
+          {isAgent && showAgentGenerationControls && (
             <div
               className="node-model-picker generation-type-picker nodrag nopan"
               ref={generationPickerRef}
@@ -480,7 +632,7 @@ export function NodeChatComposer({
                 aria-expanded={generationMenuOpen}
                 onClick={() => setGenerationMenuOpen((value) => !value)}
               >
-                {generationType === "图片" ? <ImageIcon size={14} /> : generationType === "文档" ? <File size={14} /> : <FileText size={14} />}
+                {generationType === "图片" ? <ImageIcon size={14} /> : generationType === "文本" ? <FileText size={14} /> : <Sparkles size={14} />}
                 <span>{generationType}</span>
                 <ChevronDown
                   className={generationMenuOpen ? "is-open" : ""}
@@ -494,9 +646,9 @@ export function NodeChatComposer({
                   aria-label="生成类型"
                 >
                   {[
+                    { label: "自动", icon: <Sparkles size={20} />, description: '根据需求与模型能力自动选择' },
                     { label: "文本", icon: <FileText size={20} /> },
                     { label: "图片", icon: <ImageIcon size={20} /> },
-                    { label: "文档", icon: <File size={20} /> },
                   ].map((item) => (
                     <button
                       type="button"
@@ -505,14 +657,14 @@ export function NodeChatComposer({
                       role="option"
                       aria-selected={generationType === item.label}
                       onClick={() => {
-                        setGenerationType(item.label);
+                        setGenerationType(item.label as AgentRunOptions['generationType']);
                         setGenerationMenuOpen(false);
                       }}
                     >
                       <span className="node-model-icon">{item.icon}</span>
                       <span className="node-model-copy">
                         <strong>{item.label}</strong>
-                        <small>Agent 输出类型</small>
+                        <small>{item.description ?? 'Agent 输出类型'}</small>
                       </span>
                       {generationType === item.label && (
                         <Check className="node-model-check" size={15} />
@@ -523,7 +675,7 @@ export function NodeChatComposer({
               )}
             </div>
           )}
-          {isAgent ? (
+          {isAgent && showAgentGenerationControls ? (
             <div
               className="result-grid-picker nodrag nopan"
               ref={cardCountPickerRef}
@@ -584,18 +736,27 @@ export function NodeChatComposer({
           ) : null}
         </div>
           <button
-            className="node-chat-send"
-            type="submit"
-            disabled={!prompt.trim() || effectiveRunStatus === 'running' || !selectedModel || (generationType === '图片' && !selectedModel.apiKey)}
-          aria-label="发送聊天请求"
-        >
-          <CornerDownLeft size={18} />
-        </button>
+            className={`node-chat-send ${executing ? 'is-stop' : ''}`}
+          type="button"
+          onClick={(event) => {
+            if (executing) {
+              stopExecution(event);
+              return;
+            }
+            event.preventDefault();
+            void send();
+          }}
+            disabled={executing ? false : !prompt.trim() || effectiveRunStatus === 'running' || !selectedModel || (isAgent && selectedModel.capabilities.includes('image') && !selectedModel.apiKey)}
+            aria-label={executing ? '暂停当前执行' : '发送聊天请求'}
+            title={executing ? '暂停' : '发送'}
+          >
+            {executing ? <Pause size={18} fill="currentColor" /> : <CornerDownLeft size={18} />}
+          </button>
       </footer>
       {executionSummary.length > 0 && (
         <div className={`execution-summary execution-summary--${effectiveRunStatus}`} role="status" aria-live="polite">
           <span className="execution-summary__pulse" />
-          <span>{executionSummary.slice(0, 3).map((line) => <small key={line}>{line}</small>)}</span>
+          <span>{(effectiveRunStatus === 'running' ? executionSummary.slice(-3) : executionSummary.slice(0, 3)).map((line, index) => <small key={`${index}-${line}`}>{line}</small>)}</span>
         </div>
       )}
     </form>

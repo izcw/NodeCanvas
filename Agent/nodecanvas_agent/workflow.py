@@ -49,7 +49,9 @@ class AgentWorkflow:
         updated_count = sum(operation.kind == "update_node" for operation in state["operations"])
         context = state["context"]
         operation_summary = (
-            f"已编排 {created_count} 个新增节点。"
+            "本次为纯聊天，未修改画布。"
+            if request.operation_mode == "chat"
+            else f"已编排 {created_count} 个新增节点。"
             if created_count
             else f"已定位并更新 {updated_count} 个已有节点。"
         )
@@ -57,13 +59,13 @@ class AgentWorkflow:
         knowledge_suffix = f"，参考：{'、'.join(knowledge_sources)}" if knowledge_sources else ""
         context_summary = (
             f"读取当前节点原文及 {len(context.direct_inputs)} 个直接上下文。"
-            if context.current_node
+            if context.focus_node
             else f"读取 {len(context.direct_inputs)} 个直接上下文，检索 {len(context.knowledge)} 条知识{knowledge_suffix}。"
         )
         candidate_summary = (
             "已生成并校验优化结果。"
             if context.current_node
-            else f"{state['provider_name']} 已生成并校验 {len(state['candidates'])} 个候选结果。"
+            else f"{state['provider_name']} 已生成并校验 {len(state['candidates'])} 个关联节点。"
         )
         return AgentRunResult(
             provider=state["provider_name"],
@@ -81,6 +83,38 @@ class AgentWorkflow:
     def _resolve_context(self, state: WorkflowState) -> WorkflowState:
         return {"context": self.resolver.resolve(state["request"], state.get("knowledge", []))}
 
+    def stream_chat(self, request: AgentRunRequest, knowledge: list[str] | None = None):
+        context = self.resolver.resolve(request, knowledge or [])
+        provider = self.provider if request.connection is None else provider_from_connection(request.connection)
+        return context, provider.name, provider.stream_chat(context=context, model=request.model, operation_mode=request.operation_mode)
+
+    def stream_node_update(self, request: AgentRunRequest, knowledge: list[str] | None = None):
+        context = self.resolver.resolve(request, knowledge or [])
+        provider = self.provider if request.connection is None else provider_from_connection(request.connection)
+        return context, provider.name, provider.stream_chat_events(context=context, model=request.model, operation_mode="update_source")
+
+    def streamed_update_result(self, request: AgentRunRequest, context: ContextSnapshot, provider_name: str, content: str) -> AgentRunResult:
+        current = context.current_node
+        if current is None:
+            raise ValueError("streamed node update requires a current node")
+        candidate = Candidate(title=current.title, content=content, tags=["节点修改", "流式输出"], reason="流式节点修改")
+        completion_tokens = max(1, len(content) // 3)
+        usage = TokenUsage(
+            prompt_tokens=context.token_estimate,
+            completion_tokens=completion_tokens,
+            total_tokens=context.token_estimate + completion_tokens,
+            estimated=True,
+        )
+        operations = self._compile_operations(request, [candidate])
+        return AgentRunResult(
+            provider=provider_name,
+            context=context,
+            candidates=[candidate],
+            usage=usage,
+            operations=operations,
+            summary=["已读取当前节点原文。", "已流式生成并校验修改结果。", "已更新当前节点。"],
+        )
+
     def _generate_candidates(self, state: WorkflowState) -> WorkflowState:
         request = state["request"]
         provider = self.provider if request.connection is None else provider_from_connection(request.connection)
@@ -89,6 +123,8 @@ class AgentWorkflow:
             count=request.grid.count,
             model=request.model,
             generation_type=request.generation_type,
+            rows=request.grid.rows,
+            columns=request.grid.columns,
         )
         return {
             "provider_name": provider.name,
@@ -121,6 +157,8 @@ class AgentWorkflow:
     @staticmethod
     def _compile_operations(request: AgentRunRequest, candidates: list[Candidate]) -> list[GraphOperation]:
         source = next(node for node in request.graph.nodes if node.id == request.source_node_id)
+        if request.operation_mode == "chat":
+            return []
         if request.operation_mode == "update_source":
             candidate = candidates[0]
             return [

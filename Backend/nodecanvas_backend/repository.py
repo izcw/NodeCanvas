@@ -46,6 +46,7 @@ class SQLiteRepository:
                     status TEXT NOT NULL,
                     provider TEXT NOT NULL,
                     prompt TEXT NOT NULL,
+                    operation_mode TEXT NOT NULL DEFAULT 'agent',
                     result_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
@@ -93,6 +94,9 @@ class SQLiteRepository:
                 connection.execute("ALTER TABLE knowledge_documents ADD COLUMN index_error TEXT")
             if "indexed_at" not in knowledge_columns:
                 connection.execute("ALTER TABLE knowledge_documents ADD COLUMN indexed_at TEXT")
+            run_columns = {row["name"] for row in connection.execute("PRAGMA table_info(agent_runs)").fetchall()}
+            if "operation_mode" not in run_columns:
+                connection.execute("ALTER TABLE agent_runs ADD COLUMN operation_mode TEXT NOT NULL DEFAULT 'agent'")
 
     def ensure_project(self, project_id: str, title: str = "NodeCanvas 项目") -> None:
         now = utc_now()
@@ -220,14 +224,14 @@ class SQLiteRepository:
             connection.execute("UPDATE projects SET updated_at = ? WHERE id = ?", (now, project_id))
         return stored
 
-    def save_run(self, project_id: str, prompt: str, result: AgentRunResult) -> None:
+    def save_run(self, project_id: str, prompt: str, result: AgentRunResult, operation_mode: str = "agent") -> None:
         self.ensure_project(project_id)
         with self.connect() as connection:
             connection.execute(
                 """
                 INSERT INTO agent_runs
-                    (id, project_id, source_node_id, status, provider, prompt, result_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, project_id, source_node_id, status, provider, prompt, operation_mode, result_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     result.run_id,
@@ -236,6 +240,7 @@ class SQLiteRepository:
                     result.status,
                     result.provider,
                     prompt,
+                    operation_mode,
                     result.model_dump_json(),
                     result.created_at,
                 ),
@@ -265,12 +270,44 @@ class SQLiteRepository:
         with self.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT id, source_node_id, status, provider, prompt, created_at
+                SELECT id, source_node_id, status, provider, prompt, operation_mode, result_json, created_at
                 FROM agent_runs WHERE project_id = ? ORDER BY created_at DESC LIMIT ?
                 """,
                 (project_id, limit),
             ).fetchall()
-        return [dict(row) for row in rows]
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            result_json = item.pop("result_json", "{}")
+            try:
+                result = json.loads(result_json)
+            except (TypeError, json.JSONDecodeError):
+                result = {}
+            context = result.get("context", {}) if isinstance(result, dict) else {}
+            focus = context.get("focus_node") or context.get("current_node")
+            if not focus:
+                direct_inputs = context.get("direct_inputs", [])
+                focus = direct_inputs[0] if direct_inputs else {}
+            candidates = result.get("candidates", []) if isinstance(result, dict) else []
+            summary = result.get("summary", []) if isinstance(result, dict) else []
+            operations = result.get("operations", []) if isinstance(result, dict) else []
+            if item["operation_mode"] == "agent" and not operations and any("纯聊天" in str(line) for line in summary):
+                # Runs created before operation_mode was stored can still be
+                # identified from their immutable result payload.
+                item["operation_mode"] = "chat"
+            item["title"] = focus.get("title", "未命名节点") if isinstance(focus, dict) else "未命名节点"
+            item["category"] = "agent" if item["operation_mode"] in {"agent", "chat"} else (focus.get("kind", "text") if isinstance(focus, dict) else "text")
+            item["response"] = (
+                str(candidates[0].get("content", ""))
+                if item["operation_mode"] == "chat" and candidates and isinstance(candidates[0], dict)
+                else "\n".join(str(line) for line in summary)
+            )
+            items.append(item)
+        return items
+
+    def clear_runs(self, project_id: str) -> None:
+        with self.connect() as connection:
+            connection.execute("DELETE FROM agent_runs WHERE project_id = ?", (project_id,))
 
     def add_knowledge_document(self, project_id: str, document_id: str, name: str, kind: str, content: str, status: str = "indexed") -> None:
         self.ensure_project(project_id)

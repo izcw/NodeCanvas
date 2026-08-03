@@ -9,6 +9,7 @@ flowchart LR
     UI[React / XYFlow] --> API[FastAPI]
     API --> Repository[(SQLite)]
     API --> Retrieval[Knowledge Retrieval]
+    Retrieval --> Vector[(pgvector 可选)]
     Retrieval --> LG[LangGraph Agent]
     LG --> Provider[Model Provider]
     LG --> Ops[Graph Operations]
@@ -27,7 +28,8 @@ Agent/nodecanvas_agent/
 
 Backend/nodecanvas_backend/
 ├── main.py            # FastAPI 路由
-├── repository.py      # SQLite 持久化与知识检索
+├── repository.py      # SQLite 持久化、分块与关键词检索
+├── vector_store.py    # 可选 pgvector 索引与语义检索
 ├── graph_ops.py       # Agent 操作写入产品画布
 └── model_testing.py   # 模型连通性测试
 ```
@@ -55,6 +57,8 @@ candidates     结构化候选
 operations     create_node / update_node
 provider_name  实际使用的 Provider
 ```
+
+知识检索先按项目过滤文档，再根据配置选择 SQLite 关键词检索或 pgvector 语义检索；检索结果会保留来源文档和分块信息，供 Agent 生成上下文与前端 Run 记录展示。
 
 每个节点只返回自己的状态增量，不直接修改共享状态。图在 `AgentWorkflow` 初始化时编译，API 调用时通过 `graph.invoke()` 执行。
 
@@ -141,7 +145,7 @@ POST /api/models/test
 2. 请求 FastAPI /agent/runs
 3. 后端检索项目知识片段
 4. LangGraph 解析 Agent 直接入边
-5. Provider 生成 rows × columns 个候选
+5. Provider 生成 rows × columns 个候选（知识片段作为受限上下文）
 6. 校验数量、结构和重复内容
 7. 编译 create_node / update_node 操作
 8. 后端写入画布快照、Run 和 Context Snapshot
@@ -154,5 +158,5 @@ POST /api/models/test
 2. LangGraph Checkpointer 与稳定 `thread_id`。
 3. SSE 按完整候选或图片任务状态推送。
 4. 图片结果转存 MinIO/S3，避免供应商临时 URL 失效。
-5. PostgreSQL + pgvector 混合检索与 metadata filter。
+5. PostgreSQL + pgvector 混合检索、metadata filter 与可观测性。
 6. 用户、工作区、权限和服务端凭据管理。

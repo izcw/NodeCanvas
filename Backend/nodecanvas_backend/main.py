@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+import json
+from threading import Lock
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from Agent.nodecanvas_agent import AgentRunRequest, AgentWorkflow
-from Agent.nodecanvas_agent.models import GraphSnapshot
+from Agent.nodecanvas_agent.models import AgentRunResult, Candidate, GraphSnapshot, TokenUsage
 
 from .api_models import AgentRunResponse, HealthResponse, KnowledgeDocumentCreate, KnowledgeDocumentList, ModelConnectionTestRequest, ModelConnectionTestResponse, ProjectCoverUpdate, ProjectCreate, ProjectSummary, ProjectUpdate
 from .config import get_settings
@@ -28,6 +31,24 @@ vector_index = PgvectorKnowledgeIndex(
         dimensions=settings.embedding_dimensions,
     ),
 )
+cancelled_runs: set[tuple[str, str]] = set()
+cancelled_runs_lock = Lock()
+
+
+def cancel_run(project_id: str, client_run_id: str) -> None:
+    with cancelled_runs_lock:
+        cancelled_runs.add((project_id, client_run_id))
+
+
+def is_run_cancelled(project_id: str, client_run_id: str | None, *, consume: bool = False) -> bool:
+    if not client_run_id:
+        return False
+    key = (project_id, client_run_id)
+    with cancelled_runs_lock:
+        cancelled = key in cancelled_runs
+        if cancelled and consume:
+            cancelled_runs.discard(key)
+        return cancelled
 
 
 def index_knowledge_document(project_id: str, document_id: str) -> str:
@@ -169,9 +190,13 @@ def run_agent(project_id: str, request: AgentRunRequest) -> AgentRunResponse:
     try:
         knowledge = vector_index.search(project_id, request.prompt) if vector_index.enabled else repository.search_knowledge(project_id, request.prompt)
         result = workflow.run(request, knowledge=knowledge)
-        updated_graph = apply_agent_result(request.graph, result)
-        stored_graph = repository.save_graph(project_id, updated_graph)
-        repository.save_run(project_id, request.prompt, result)
+        if is_run_cancelled(project_id, request.client_run_id, consume=True):
+            raise HTTPException(status_code=409, detail="本次生成已暂停，结果未写入画布")
+        stored_graph = request.graph if not result.operations else repository.save_graph(project_id, apply_agent_result(request.graph, result))
+        if is_run_cancelled(project_id, request.client_run_id, consume=True):
+            repository.save_graph(project_id, request.graph)
+            raise HTTPException(status_code=409, detail="本次生成已暂停，结果已撤销")
+        repository.save_run(project_id, request.prompt, result, request.operation_mode)
         return AgentRunResponse(run=result, graph=stored_graph)
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
@@ -179,9 +204,99 @@ def run_agent(project_id: str, request: AgentRunRequest) -> AgentRunResponse:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
+@app.post("/api/projects/{project_id}/agent/runs/{client_run_id}/cancel")
+def cancel_agent_run(project_id: str, client_run_id: str) -> dict[str, bool]:
+    cancel_run(project_id, client_run_id)
+    return {"cancelled": True}
+
+
 @app.get("/api/projects/{project_id}/agent/runs")
 def list_agent_runs(project_id: str, limit: int = Query(default=20, ge=1, le=100)) -> dict[str, object]:
     return {"items": repository.list_runs(project_id, limit)}
+
+
+@app.delete("/api/projects/{project_id}/agent/runs", status_code=204)
+def clear_agent_runs(project_id: str) -> None:
+    repository.clear_runs(project_id)
+
+
+@app.post("/api/projects/{project_id}/agent/chat/stream")
+def stream_agent_chat(project_id: str, request: AgentRunRequest) -> StreamingResponse:
+    if request.operation_mode != "chat":
+        raise HTTPException(status_code=422, detail="stream endpoint only accepts chat mode")
+    knowledge = vector_index.search(project_id, request.prompt) if vector_index.enabled else repository.search_knowledge(project_id, request.prompt)
+    context, provider_name, chunks = workflow.stream_chat(request, knowledge)
+
+    def stream():
+        answer_parts: list[str] = []
+        try:
+            for chunk in chunks:
+                if is_run_cancelled(project_id, request.client_run_id):
+                    is_run_cancelled(project_id, request.client_run_id, consume=True)
+                    return
+                answer_parts.append(chunk)
+                yield json.dumps({"type": "delta", "content": chunk}, ensure_ascii=False) + "\n"
+            answer = "".join(answer_parts)
+            completion_tokens = max(1, len(answer) // 3)
+            usage = TokenUsage(
+                prompt_tokens=context.token_estimate,
+                completion_tokens=completion_tokens,
+                total_tokens=context.token_estimate + completion_tokens,
+                estimated=True,
+            )
+            result = AgentRunResult(
+                provider=provider_name,
+                context=context,
+                candidates=[Candidate(title="Agent 回答", content=answer, tags=["聊天", "Markdown"], reason="流式回答")],
+                usage=usage,
+                operations=[],
+                summary=["已读取当前节点和直接上下文。", "已完成 Markdown 流式回答。", "本次为纯聊天，未修改画布。"],
+            )
+            if is_run_cancelled(project_id, request.client_run_id, consume=True):
+                return
+            repository.save_run(project_id, request.prompt, result, request.operation_mode)
+            yield json.dumps({"type": "done", "run": result.model_dump(mode="json")}, ensure_ascii=False) + "\n"
+        except Exception as exc:
+            yield json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/projects/{project_id}/agent/node-chat/stream")
+def stream_node_chat(project_id: str, request: AgentRunRequest) -> StreamingResponse:
+    if request.operation_mode != "update_source":
+        raise HTTPException(status_code=422, detail="node chat stream endpoint only accepts update_source mode")
+    knowledge = vector_index.search(project_id, request.prompt) if vector_index.enabled else repository.search_knowledge(project_id, request.prompt)
+    context, provider_name, chunks = workflow.stream_node_update(request, knowledge)
+
+    def stream():
+        answer_parts: list[str] = []
+        try:
+            for event_type, chunk in chunks:
+                if is_run_cancelled(project_id, request.client_run_id):
+                    is_run_cancelled(project_id, request.client_run_id, consume=True)
+                    return
+                if event_type == "reasoning":
+                    yield json.dumps({"type": "reasoning", "content": chunk}, ensure_ascii=False) + "\n"
+                    continue
+                answer_parts.append(chunk)
+                yield json.dumps({"type": "delta", "content": chunk}, ensure_ascii=False) + "\n"
+            answer = "".join(answer_parts).strip()
+            if not answer:
+                raise ValueError("model returned no node content")
+            result = workflow.streamed_update_result(request, context, provider_name, answer)
+            if is_run_cancelled(project_id, request.client_run_id, consume=True):
+                return
+            stored_graph = repository.save_graph(project_id, apply_agent_result(request.graph, result))
+            if is_run_cancelled(project_id, request.client_run_id, consume=True):
+                repository.save_graph(project_id, request.graph)
+                return
+            repository.save_run(project_id, request.prompt, result, request.operation_mode)
+            yield json.dumps({"type": "done", "run": result.model_dump(mode="json"), "graph": stored_graph.model_dump(mode="json")}, ensure_ascii=False) + "\n"
+        except Exception as exc:
+            yield json.dumps({"type": "error", "message": str(exc)}, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(stream(), media_type="application/x-ndjson", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/projects/{project_id}/knowledge/documents", status_code=201)

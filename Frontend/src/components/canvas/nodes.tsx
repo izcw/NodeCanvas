@@ -1,10 +1,12 @@
 /* eslint-disable react-refresh/only-export-components */
 import {
+  createContext,
   type ChangeEvent,
   type ReactNode,
   lazy,
   memo,
   Suspense,
+  useContext,
   useEffect,
   useRef,
   useState,
@@ -19,9 +21,7 @@ import {
 } from '@xyflow/react'
 import {
   Copy,
-  Bot,
   Check,
-  ChevronDown,
   Code2,
   Expand,
   File,
@@ -34,10 +34,10 @@ import {
   Trash2,
 } from 'lucide-react'
 import type { CanvasNode } from '../../types/canvas'
-import { NodeChatComposer } from './NodeChatComposer'
 import { NodeSelect } from './NodeSelect'
 
 const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'))
+export const CanvasNodeReadOnlyContext = createContext(false)
 
 type NodeKind = CanvasNode['type']
 
@@ -87,6 +87,7 @@ function NodeContextMenu({
   isImage,
   position,
   anchorRef,
+  readOnly,
   onClose,
   onPreview,
   onReplaceImage,
@@ -95,6 +96,7 @@ function NodeContextMenu({
   isImage: boolean
   position: { x: number; y: number }
   anchorRef: { current: HTMLElement | null }
+  readOnly: boolean
   onClose: () => void
   onPreview: () => void
   onReplaceImage: () => void
@@ -143,7 +145,7 @@ function NodeContextMenu({
       style={{ left: position.x, top: position.y }}
       onPointerDown={(event) => event.stopPropagation()}
     >
-      {isImage && (
+      {!readOnly && isImage && (
         <button role="menuitem" onClick={onReplaceImage}>
           <ImageIcon size={15} />
           替换图片
@@ -163,10 +165,10 @@ function NodeContextMenu({
         <Maximize2 size={15} />
         全屏预览
       </button>
-      <button role="menuitem" onClick={duplicate}>
+      {!readOnly && <button role="menuitem" onClick={duplicate}>
         <Copy size={15} />
         创建副本
-      </button>
+      </button>}
       <button
         role="menuitem"
         onClick={() => {
@@ -179,7 +181,7 @@ function NodeContextMenu({
         <Copy size={15} />
         复制内容
       </button>
-      <span className="node-menu-divider" />
+      {!readOnly && <><span className="node-menu-divider" />
       <button
         role="menuitem"
         className="danger"
@@ -190,7 +192,7 @@ function NodeContextMenu({
       >
         <Trash2 size={15} />
         删除节点
-      </button>
+      </button></>}
     </div>,
     document.body,
   )
@@ -209,6 +211,7 @@ function NodeFrame({
   generationStatus,
 }: NodeFrameProps) {
   const { getNode, getNodes, setNodes } = useReactFlow()
+  const readOnly = useContext(CanvasNodeReadOnlyContext)
   const [menuOpen, setMenuOpen] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
@@ -330,6 +333,7 @@ function NodeFrame({
           isImage={getNode(id)?.type === 'image'}
           position={menuPosition}
           anchorRef={frameRef}
+          readOnly={readOnly}
           onClose={() => setMenuOpen(false)}
           onPreview={() => { setMenuOpen(false); setPreviewOpen(true) }}
           onReplaceImage={() => imageInputRef.current?.click()}
@@ -349,11 +353,11 @@ function NodeFullscreenPreview({ node, onClose }: { node?: CanvasNode; onClose: 
   if (!node) return null
   const { data } = node
   return createPortal(
-    <div className="node-fullscreen-preview" role="dialog" aria-modal="true" aria-label={`${data.title} 全屏预览`} onMouseDown={onClose}>
+    <div className={`node-fullscreen-preview node-fullscreen-preview--${node.type}`} role="dialog" aria-modal="true" aria-label={`${data.title} 全屏预览`} onMouseDown={onClose}>
       <section onMouseDown={(event) => event.stopPropagation()}>
-        <header><div><span>{node.type === 'image' ? '图片节点' : node.type === 'file' ? '附件节点' : node.type === 'agent' ? 'Agent 节点' : '文本节点'}</span><h2>{data.title || '未命名节点'}</h2></div><button onClick={onClose} aria-label="关闭全屏预览">关闭</button></header>
+        <header><div><span>{node.type === 'image' ? '图片节点' : node.type === 'file' ? '附件节点' : node.type === 'comment' ? '备注节点' : '文本节点'}</span><h2>{data.title || '未命名节点'}</h2></div><button onClick={onClose} aria-label="关闭全屏预览">关闭</button></header>
         <main>
-          {node.type === 'image' && data.imageUrl ? <img src={data.imageUrl} alt={data.title || '节点图片'} /> : node.type === 'file' ? <div className="node-preview-file"><File size={32} /><strong>{data.fileName || data.title}</strong><span>{data.fileKind || 'FILE'} · {data.fileSize || '未知大小'}</span><p>{data.content || '该附件没有可预览的文本内容。'}</p></div> : <article>{data.content || '暂无内容'}</article>}
+          {node.type === 'image' && data.imageUrl ? <img src={data.imageUrl} alt={data.title || '节点图片'} /> : node.type === 'file' ? <div className="node-preview-file"><File size={32} /><strong>{data.fileName || data.title}</strong><span>{data.fileKind || 'FILE'} · {data.fileSize || '未知大小'}</span><p>{data.content || '该附件没有可预览的文本内容。'}</p></div> : node.type === 'text' && data.format === 'markdown' ? <article className="node-preview-markdown markdown-preview">{data.content?.trim() ? <Suspense fallback={<span className="markdown-preview__empty">正在渲染 Markdown…</span>}><MarkdownRenderer content={data.content} /></Suspense> : <span className="markdown-preview__empty">暂无 Markdown 内容</span>}</article> : <article>{data.content || '暂无内容'}</article>}
         </main>
       </section>
     </div>,
@@ -556,11 +560,7 @@ export const ImageNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) =>
         nodeId={id}
       />
       <div className="node-card__body node-card__body--image">
-        <img
-          draggable={false}
-          src={data.imageUrl || '/sample-concept.svg'}
-          alt={data.title}
-        />
+        {data.imageUrl ? <img draggable={false} src={data.imageUrl} alt={data.title} /> : <div className="image-node-empty"><ImageIcon size={28} /><span>等待生成图片</span></div>}
       </div>
     </NodeFrame>
   )
@@ -637,60 +637,14 @@ export const CommentNode = memo(
   },
 )
 
-export const AgentNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => {
-  const { getEdges, getNodes } = useReactFlow()
-  const allNodes = getNodes() as CanvasNode[]
-  const allowedNodeIds = new Set(getEdges().flatMap((edge) => {
-    if (edge.target === id && (!edge.targetHandle || edge.targetHandle === 'left-target')) return [edge.source]
-    if (edge.source === id && (!edge.sourceHandle || edge.sourceHandle === 'right-source')) return [edge.target]
-    return []
-  }))
-
-  return (
-    <NodeFrame
-      id={id}
-      kind="agent"
-      selected={selected}
-      minWidth={390}
-      minHeight={290}
-      maxWidth={680}
-      maxHeight={560}
-      generationStatus={data.generationStatus}
-    >
-      <NodeHeader
-        icon={<Bot size={16} />}
-        label="Agent 节点"
-        title={data.title}
-        nodeId={id}
-      />
-      <div className="node-card__body node-card__body--agent nodrag nopan nowheel">
-        <NodeChatComposer
-          mode="agent"
-          nodeTitle={data.title}
-          nodes={allNodes.filter((node) => allowedNodeIds.has(node.id))}
-          runStatus={data.agentStatus}
-          runSummary={data.agentSummary}
-          onSend={(prompt, model, options) => {
-            window.dispatchEvent(new CustomEvent('nodecanvas:agent-send', {
-              detail: { sourceId: id, prompt, model, options },
-            }))
-          }}
-        />
-      </div>
-    </NodeFrame>
-  )
-})
-
 TextNode.displayName = 'TextNode'
 ImageNode.displayName = 'ImageNode'
 FileNode.displayName = 'FileNode'
 CommentNode.displayName = 'CommentNode'
-AgentNode.displayName = 'AgentNode'
 
 export const nodeTypes = {
   text: TextNode,
   image: ImageNode,
   file: FileNode,
   comment: CommentNode,
-  agent: AgentNode,
 }

@@ -1,13 +1,6 @@
 # NodeCanvas Backend
 
-FastAPI 服务已实现以下主链路：
-
-- SQLite 持久化项目画布快照与 revision
-- Agent Run、Context Snapshot 和结果记录
-- 文本知识文档分块与项目内关键词检索；配置 PostgreSQL + pgvector 后切换为向量检索
-- LangGraph Agent 执行 API 与结果图持久化
-- 临时模型连通性测试（凭据不入库）
-- 本地开发 CORS、健康检查和 OpenAPI 文档
+NodeCanvas 后端是一个 FastAPI 服务，负责项目画布快照、Agent Run、知识库文档和模型连通性测试。Agent 执行由 `Agent/nodecanvas_agent/workflow.py` 中的 LangGraph `StateGraph` 驱动。
 
 ## 启动
 
@@ -19,15 +12,15 @@ Backend/.venv/bin/python -m pip install -r Backend/requirements.txt
 Backend/.venv/bin/python -m uvicorn Backend.nodecanvas_backend.main:app --reload --port 8000
 ```
 
-服务地址：
+- API：`http://127.0.0.1:8000`
+- OpenAPI：`http://127.0.0.1:8000/docs`
+- 健康检查：`GET /health`
 
-- API: `http://127.0.0.1:8000`
-- OpenAPI: `http://127.0.0.1:8000/docs`
-- 健康检查: `GET /health`
+SQLite 数据默认写入 `Backend/data/nodecanvas.db`，该目录不会提交到 Git。
 
-## 模型配置
+## 配置模型 Provider
 
-默认使用确定性的本地 Provider，便于在没有密钥时完成开发、测试和端到端联调。配置以下环境变量后会调用真实的 OpenAI-compatible `chat/completions` 接口：
+不配置密钥时使用确定性的本地 Provider，便于测试和前后端联调。接入真实 OpenAI-compatible `chat/completions` 服务时设置：
 
 ```bash
 export NODECANVAS_LLM_BASE_URL=https://your-provider.example/v1
@@ -35,7 +28,7 @@ export NODECANVAS_LLM_API_KEY=your-key
 export NODECANVAS_LLM_MODEL=your-model-id
 ```
 
-模型必须返回包含 `candidates` 数组的 JSON 对象。Provider 返回不完整 JSON、候选不足或网络失败时，API 返回 502，不会把半成品写入画布。
+模型需要返回包含 `candidates` 数组的 JSON。后端会校验候选和画布操作；网络失败、JSON 不完整或候选不足时返回错误，不会写入半成品图操作。百炼生图和其他变量可参考 `Backend/.env.example`。
 
 ## API
 
@@ -48,7 +41,29 @@ POST /api/projects/{project_id}/agent/runs
 GET  /api/projects/{project_id}/agent/runs
 POST /api/projects/{project_id}/knowledge/documents
 GET  /api/projects/{project_id}/knowledge/documents
+POST /api/projects/{project_id}/knowledge/documents/{document_id}/retry
 ```
+
+项目图和执行记录由 SQLite 事务化保存。知识文档会先分块，再根据配置使用关键词检索或 pgvector 语义检索。完整参数以运行中的 OpenAPI 文档为准。
+
+## pgvector 语义检索（可选）
+
+pgvector 是知识检索的派生索引，不替代 SQLite 主存储。已安装 Docker 时：
+
+```bash
+docker compose -f Backend/compose.pgvector.yml up -d
+export NODECANVAS_PGVECTOR_DATABASE_URL=postgresql://nodecanvas:nodecanvas@127.0.0.1:5432/nodecanvas
+```
+
+如需真实 Embeddings API：
+
+```bash
+export NODECANVAS_EMBEDDING_BASE_URL=https://your-provider.example/v1
+export NODECANVAS_EMBEDDING_API_KEY=your-key
+export NODECANVAS_EMBEDDING_MODEL=your-embedding-model
+```
+
+服务启动时会创建 `vector` 扩展并尝试回填已有分块；文档新增、删除和重试会同步索引。知识库中的索引状态用于区分 `pending`、`indexed` 和 `failed`。未配置 Embeddings 时使用确定性 hash embedding，仅适合离线开发和测试。
 
 ## 测试
 
@@ -56,14 +71,4 @@ GET  /api/projects/{project_id}/knowledge/documents
 Backend/.venv/bin/python -m pytest Backend/tests -q
 ```
 
-SQLite 数据默认保存在 `Backend/data/nodecanvas.db`，该目录不会提交到 Git。
-
-## pgvector 语义检索
-
-项目画布与执行记录继续由 SQLite 事务化保存；知识分块会同步到 PostgreSQL 的 `nodecanvas_knowledge_vectors` 作为可重建的 pgvector 索引。配置 `.env.example` 中的 `NODECANVAS_PGVECTOR_DATABASE_URL` 后，服务启动会创建 `vector` 扩展、回填已有分块，并在每次知识文档新增/删除时同步索引。
-
-设置 OpenAI-compatible embeddings 地址、密钥和模型后会调用真实 Embeddings API；未设置时使用确定性本地 hash embedding，仅用于离线开发与测试，不应用于生产检索质量评估。
-
-若已安装 Docker，可运行 `docker compose -f Backend/compose.pgvector.yml up -d` 启动本地 pgvector，再设置 `NODECANVAS_PGVECTOR_DATABASE_URL=postgresql://nodecanvas:nodecanvas@127.0.0.1:5432/nodecanvas`。知识库会显示索引状态；失败后可在界面中重试，服务启动也会自动回填索引。
-
-LangGraph 正式版要求 Python 3.10+；本仓库本地基线采用 Python 3.12。
+LangGraph 当前没有启用 Checkpointer：Run 和 Context Snapshot 会保存，但中间 super-step 不支持暂停恢复。需要人工审批或长任务恢复时，应接入 PostgreSQL Checkpointer，并为每次 Run 使用稳定的 `thread_id`。

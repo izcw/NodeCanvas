@@ -18,7 +18,7 @@ export type CanvasNodeData = {
   generationRunId?: string
 }
 
-export type CanvasNode = Node<CanvasNodeData, 'text' | 'image' | 'file' | 'comment' | 'agent'>
+export type CanvasNode = Node<CanvasNodeData, 'text' | 'image' | 'file' | 'comment'>
 export type CanvasEdge = Edge
 
 export type KnowledgeItem = {
@@ -31,7 +31,7 @@ export type KnowledgeItem = {
 }
 
 export type AgentRunOptions = {
-  generationType: '文本' | '图片' | '文档'
+  generationType: '自动' | '文本' | '图片'
   grid: { rows: number; columns: number }
   targetNodeIds?: string[]
 }

@@ -63,7 +63,7 @@ export function LeftSidebar({ collapsed, tab, groups, nodes, knowledge, onTabCha
     }
   }, [knowledgeMenuId])
   if (collapsed) {
-    return <aside className="left-sidebar collapsed-hidden" />
+    return null
   }
   const filteredKnowledge = knowledge.filter((item) => item.name.toLowerCase().includes(knowledgeQuery.trim().toLowerCase()))
 
