@@ -97,6 +97,23 @@ def test_context_includes_current_node_and_every_left_linked_node() -> None:
     assert "output-1" not in {item.node_id for item in result.context.direct_inputs}
 
 
+def test_only_adopted_input_edge_becomes_context() -> None:
+    payload = make_request(rows=1, columns=1).model_dump(mode="json")
+    payload["graph"]["nodes"].extend([
+        {"id": "plan-a", "type": "text", "position": {"x": 0, "y": 160}, "data": {"title": "人群方案A", "content": "都市通勤女性"}},
+        {"id": "plan-b", "type": "text", "position": {"x": 0, "y": 320}, "data": {"title": "人群方案B", "content": "新能源科技先锋"}},
+    ])
+    payload["graph"]["edges"].extend([
+        {"id": "plan-a-agent", "source": "plan-a", "sourceHandle": "right-source", "target": "agent-1", "targetHandle": "left-target", "data": {"selected": True}},
+        {"id": "plan-b-agent", "source": "plan-b", "sourceHandle": "right-source", "target": "agent-1", "targetHandle": "left-target"},
+    ])
+
+    result = AgentWorkflow(provider=DeterministicProvider()).run(AgentRunRequest.model_validate(payload))
+
+    # 多方案分支下只采纳被标记的连线，未标记的方案不作为上下文
+    assert [item.node_id for item in result.context.direct_inputs] == ["plan-a"]
+
+
 def test_grid_is_limited_to_four_by_four() -> None:
     payload = make_request().model_dump(mode="json")
     payload["grid"] = {"rows": 5, "columns": 4}
@@ -203,5 +220,5 @@ def test_response_language_defaults_to_chinese_and_supports_english() -> None:
     payload = make_request(rows=1, columns=1).model_dump(mode="json")
     payload["response_language"] = "en-US"
     english = AgentWorkflow(provider=DeterministicProvider()).run(AgentRunRequest.model_validate(payload))
-    assert english.candidates[0].title == "Stage 1 · Step 1"
-    assert "one connected plan" in english.candidates[0].content
+    assert english.candidates[0].title == "Plan 1 · Step 1"
+    assert "independent plan" in english.candidates[0].content

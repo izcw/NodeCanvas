@@ -24,12 +24,16 @@ class ContextGraphResolver:
     def resolve(self, request: AgentRunRequest, knowledge: list[str] | None = None) -> ContextSnapshot:
         nodes_by_id = {node.id: node for node in request.graph.nodes}
         source = nodes_by_id[request.source_node_id]
-        input_ids = [
-            edge.source
+        input_edges = [
+            edge
             for edge in request.graph.edges
             if edge.target == request.source_node_id
             and (edge.targetHandle in (None, "left-target"))
         ]
+        # 多方案分支下，仅被“采纳”连线（data.selected）的来源节点进入上下文；
+        # 未标记任何采纳线时保持原有行为：全部直接输入都是上下文。
+        adopted_edges = [edge for edge in input_edges if (edge.data or {}).get("selected") is True]
+        input_ids = [edge.source for edge in (adopted_edges or input_edges)]
         items = []
         for node_id in dict.fromkeys(input_ids):
             node = nodes_by_id.get(node_id)

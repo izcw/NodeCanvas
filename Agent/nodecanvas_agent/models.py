@@ -42,6 +42,7 @@ class GraphEdge(BaseModel):
     targetHandle: str | None = None
     animated: bool | None = None
     style: dict[str, Any] | None = None
+    data: dict[str, Any] | None = None
 
 
 class GraphSnapshot(BaseModel):
@@ -74,7 +75,7 @@ class AgentRunRequest(BaseModel):
     client_run_id: str | None = Field(default=None, max_length=120)
     source_node_id: str
     prompt: str = Field(min_length=1, max_length=12_000)
-    model: str = "Kimi K2"
+    model: str = "DeepSeek V4 Flash"
     generation_type: GenerationType = "文本"
     operation_mode: OperationMode = "agent"
     response_language: ResponseLanguage = "zh-CN"

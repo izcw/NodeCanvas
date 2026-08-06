@@ -30,6 +30,7 @@ type NodeChatComposerProps = {
   showAgentGenerationControls?: boolean;
   showAssistantMode?: boolean;
   portalSelects?: boolean;
+  nodeId?: string;
   runStatus?: 'idle' | 'running' | 'completed' | 'failed';
   runSummary?: string[];
   isExecuting?: boolean;
@@ -37,6 +38,12 @@ type NodeChatComposerProps = {
 };
 
 export type AssistantMode = "manual" | "auto" | "ask";
+
+// 每个节点聊天的输入草稿，关闭聊天框后重新打开时恢复，避免输入内容丢失。
+const composerDrafts = new Map<string, string>();
+
+// 全局记住 chat 中选择的模型，跨节点与关闭重开保持一致。
+const CHAT_MODEL_STORAGE_KEY = "nodecanvas:chat-model-id:v1";
 
 function takeStreamLine(buffer: string, force = false) {
   const leadingTrimmed = buffer.replace(/^\s+/, '');
@@ -63,11 +70,12 @@ export function NodeChatComposer({
   onClose,
   onSend,
   nodes,
-  defaultActionMode = "modify",
+  defaultActionMode = "agent",
   showActionMode = true,
   showAgentGenerationControls = true,
   showAssistantMode = false,
   portalSelects = false,
+  nodeId,
   runStatus = 'idle',
   runSummary = [],
   isExecuting = false,
@@ -75,7 +83,10 @@ export function NodeChatComposer({
 }: NodeChatComposerProps) {
   const { models } = useModelRegistry();
   const [prompt, setPrompt] = useState("");
-  const [modelId, setModelId] = useState(models[0]?.id ?? "");
+  const [modelId, setModelId] = useState(() => {
+    if (typeof window === "undefined") return models[0]?.id ?? "";
+    return window.localStorage.getItem(CHAT_MODEL_STORAGE_KEY) || models[0]?.id || "";
+  });
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const [mentionOpen, setMentionOpen] = useState(false);
   const [mentionQuery, setMentionQuery] = useState("");
@@ -98,6 +109,8 @@ export function NodeChatComposer({
   const cardCountPickerRef = useRef<HTMLDivElement>(null);
   const pendingCaretRef = useRef<number | null>(null);
   const inputRef = useRef<HTMLDivElement>(null);
+  const draftRestoredRef = useRef(false);
+  const draftKey = (nodeId ?? "").trim() || (nodeTitle ?? "").trim();
   const modelPickerRef = useRef<HTMLDivElement>(null);
   const inputWrapRef = useRef<HTMLDivElement>(null);
   const mentionMenuRef = useRef<HTMLDivElement>(null);
@@ -108,11 +121,12 @@ export function NodeChatComposer({
   const closeLocked = effectiveRunStatus === 'running';
   const executionSummary = isAgent ? runSummary : localSummary;
   const compatibleModels = models.filter((item) => {
+    if (!item.apiKey.trim()) return false;
     if (!isAgent) return !item.capabilities.includes('image');
     if (generationType === '自动') return true;
     return generationType === '图片' ? item.capabilities.includes('image') : !item.capabilities.includes('image');
   });
-  const selectedModel = compatibleModels.find((item) => item.id === modelId) ?? compatibleModels[0] ?? models[0];
+  const selectedModel = compatibleModels.find((item) => item.id === modelId) ?? compatibleModels[0];
 
   useEffect(() => () => {
     requestControllerRef.current?.abort();
@@ -123,9 +137,22 @@ export function NodeChatComposer({
   }, [modelId, selectedModel]);
 
   useEffect(() => {
+    window.localStorage.setItem(CHAT_MODEL_STORAGE_KEY, modelId);
+  }, [modelId]);
+
+  useEffect(() => {
     const frame = requestAnimationFrame(() => {
       const editor = inputRef.current;
       if (!editor) return;
+      if (!draftRestoredRef.current) {
+        const saved = composerDrafts.get(draftKey);
+        if (saved) {
+          editor.innerHTML = saved;
+          setPrompt(editor.textContent ?? "");
+          setSelectedMentions((current) => current.filter((mention) => (editor.textContent ?? "").includes(`@${mention}`)));
+        }
+        draftRestoredRef.current = true;
+      }
       editor.focus();
       const selection = window.getSelection();
       if (!selection) return;
@@ -136,7 +163,7 @@ export function NodeChatComposer({
       selection.addRange(range);
     });
     return () => cancelAnimationFrame(frame);
-  }, [isAgent, nodeTitle]);
+  }, [draftKey, isAgent, nodeTitle]);
 
   useEffect(() => {
     if (!modelMenuOpen) return;
@@ -219,7 +246,7 @@ export function NodeChatComposer({
     const executionModel = generationType === '自动'
       ? visualIntent
         ? models.find((item) => item.protocol === 'dashscope-image' && item.apiKey) ?? selectedModel
-        : models.find((item) => item.protocol === 'openai-chat' && item.apiKey) ?? models.find((item) => item.protocol === 'openai-chat') ?? selectedModel
+        : models.find((item) => item.protocol === 'openai-chat' && item.apiKey) ?? selectedModel
       : selectedModel;
     const controller = new AbortController();
     submittedPromptRef.current = value;
@@ -265,6 +292,7 @@ export function NodeChatComposer({
       setSelectedMentions([]);
       setMentionOpen(false);
       if (inputRef.current) inputRef.current.textContent = "";
+      if (draftKey) composerDrafts.delete(draftKey);
       if (!isAgent) {
         if (streamLineTimer !== null) window.clearInterval(streamLineTimer);
         streamLineTimer = null;
@@ -512,6 +540,7 @@ export function NodeChatComposer({
           onInput={(event) => {
             const value = event.currentTarget.textContent ?? "";
             setPrompt(value);
+            if (draftKey) composerDrafts.set(draftKey, event.currentTarget.innerHTML);
             setSelectedMentions((current) => {
               const next = current.filter((mention) =>
                 value.includes(`@${mention}`),

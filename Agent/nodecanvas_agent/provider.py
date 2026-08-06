@@ -16,7 +16,7 @@ from .models import Candidate, ContextSnapshot, ModelConnection, ProviderGenerat
 def _context_user_text(context: ContextSnapshot) -> str:
     context_text = "\n".join(f"[{item.kind}] {item.title}\n{item.content}" for item in context.direct_inputs)
     focus_node_text = (
-        f"\n\n当前锚点节点（回答或生成必须直接基于其主题与具体信息）：\n[{context.focus_node.kind}] {context.focus_node.title}\n{context.focus_node.content}"
+        f"\n\n当前节点（仅作参考，不作为主要依据）：\n[{context.focus_node.kind}] {context.focus_node.title}\n{context.focus_node.content}"
         if context.focus_node and not context.current_node
         else ""
     )
@@ -68,21 +68,23 @@ class OpenAICompatibleProvider(CandidateProvider):
 
     def generate(self, *, context: ContextSnapshot, count: int, model: str, generation_type: str, rows: int = 1, columns: int = 1) -> ProviderGeneration:
         matrix_rule = (
-            f"本次输出是一个 {rows} 行 x {columns} 列的整体内容矩阵，共 {count} 个节点。"
-            "candidates 必须严格按从左到右、从上到下的行优先顺序返回。"
-            "除非用户明确要求多个备选方案、不同方向或头脑风暴，否则这些节点不是互不相关的候选，而是同一份完整规划的连续拆分；"
-            "同一行属于同一组/同一阶段，列表示组内先后步骤，后一节点必须承接前一节点，下一行必须承接上一行的结果。"
-            "title 要直接标明组别和步骤/时段，content 要说明它与前后节点的衔接，禁止生成彼此无关的盲盒内容。"
+            f"本次输出共 {count} 个节点，按从左到右、从上到下的行优先顺序返回。"
+            f"当前宫格为 {rows} 行 x {columns} 列：每一行代表一个完全独立的方案，列代表该方案内的连续步骤，行内后一步骤必须承接前一步骤。"
+            f"只有一行时即为单一方案，其列就是该方案的连续步骤（如 1x{columns} 是同一个方案按步骤延续）；"
+            f"有多行时各行方案彼此独立、互不承接（如 {rows}x1 是 {rows} 个完全不同的方案）。"
+            "title 要直接标明方案与步骤（如“方案一 · 步骤 1”），content 要说明在本方案内的前后衔接；"
+            "禁止跨方案承接，禁止把不同方案写成同一个流程的先后阶段，也禁止生成彼此无关的盲盒内容。"
             "若任务是旅行规划：每行默认代表一天，每列按时间先后代表当天行程；"
             "三列优先使用上午/下午/晚上，四列优先使用上午/中午/下午/晚上；"
             "每个节点结合需要写明时间、地点与活动、附近美食、从上一站的交通方式、预计用时和预算，并保持路线地理上连续。"
         )
         system = (
             "你是 NodeCanvas 的创意策划 Agent。只使用给定上下文，返回严格 JSON。"
-            "当前锚点节点是本次任务的首要事实来源；即使用户指令很短，也必须基于该节点的具体内容回答或生成，禁止退化为与节点无关的通用模板。"
+            "生成必须综合理解并严格依据链接到本 Agent 的全部上下文（左侧输入节点）的主题与具体信息；"
+            "当前节点内容仅作参考，禁止只围绕当前节点生成与上下文无关的内容，也禁止退化为通用模板。"
             "输出对象必须包含 candidates 数组，每项包含 title、content、tags、reason。"
             + matrix_rule
-            + f"生成 {count} 个{generation_type}节点；默认相互衔接，仅在用户明确要求备选时才彼此差异。"
+            + f"生成 {count} 个{generation_type}节点；同一方案内相互衔接，不同方案彼此独立。"
             "如果提供了必须修改的当前节点，title 必须保持当前节点标题，content 必须是优化后的完整正文，不要返回修改说明或前后缀。"
             f"所有面向用户的 JSON 字段必须使用{'中文' if context.response_language == 'zh-CN' else 'English'}回复。"
             + ("文本结果的 content 必须使用标准 Markdown 源码组织（标题、列表、强调等按需使用）。" if generation_type == "文本" else "")
@@ -132,7 +134,8 @@ class OpenAICompatibleProvider(CandidateProvider):
             f"使用{'中文' if context.response_language == 'zh-CN' else 'English'}回复。"
             if operation_mode == "update_source"
             else
-            "你是 NodeCanvas 的项目 Agent。当前锚点节点是首要事实来源，必须结合其具体内容回答，禁止给出脱离上下文的通用答案。"
+            "你是 NodeCanvas 的项目 Agent。必须综合理解并依据链接到本 Agent 的全部上下文（左侧输入节点）回答，"
+            "当前节点内容仅作参考，禁止只围绕当前节点或给出脱离上下文的通用答案。"
             "直接回答用户问题，不要输出 JSON，不要描述内部思考过程。使用清晰的 Markdown 组织正文。"
             f"使用{'中文' if context.response_language == 'zh-CN' else 'English'}回复。"
         )
@@ -299,7 +302,7 @@ class DeterministicProvider(CandidateProvider):
                     if english and is_travel_plan
                     else f"第 {index // columns + 1} 天 · {zh_periods[columns][index % columns]}"
                     if is_travel_plan
-                    else f"{'Stage' if english else '阶段'} {index // columns + 1} · {'Step' if english else '步骤'} {index % columns + 1}"
+                    else f"{'Plan' if english else '方案'} {index // columns + 1} · {'Step' if english else '步骤'} {index % columns + 1}"
                 ),
                 content=(
                     f"{current_content}\n\n{'Optimization brief' if english else '优化说明'}: {context.goal}"
@@ -315,14 +318,14 @@ class DeterministicProvider(CandidateProvider):
                             f"衔接：{'从出发地开始' if index == 0 else '承接上一个节点的地点与时间'}；请落实适合的地点与活动、附近美食、交通方式、预计用时和预算。"
                         )
                         if is_travel_plan else
-                        f"Based on “{context.goal}” and {source_titles}, this is option {index + 1}.\n\n"
+                        f"Based on “{context.goal}” and {source_titles}, this is plan {index // columns + 1}, step {index % columns + 1}.\n\n"
                         f"Current node context: {focus_content}\n\n"
-                        f"This is stage {index // columns + 1}, step {index % columns + 1} in one connected plan.\n"
-                        f"Continue from: {'the starting context' if index == 0 else 'the previous step'}; prepare the next step for {'completion' if index + 1 == count else 'the following node'}."
-                        if english else f"围绕“{context.goal}”，基于 {source_titles} 的当前内容形成第 {index + 1} 个{generation_type}方案。\n\n"
+                        f"Each row is an independent plan; columns are that plan's sequential steps, so this node belongs to plan {index // columns + 1}.\n"
+                        f"Continue from: {'the start of this plan' if index % columns == 0 else 'the previous step within this plan'}; {'this concludes the plan' if (index % columns) + 1 == columns else 'prepare the next step within this plan'}. Plans are independent of one another."
+                        if english else f"围绕“{context.goal}”，基于 {source_titles} 形成方案 {index // columns + 1} 的步骤 {index % columns + 1}。\n\n"
                         f"当前节点原文：{focus_content}\n\n"
-                        f"这是同一份规划中的阶段 {index // columns + 1}、步骤 {index % columns + 1}。\n"
-                        f"衔接：{'从当前上下文开始' if index == 0 else '承接上一步'}，并为{'收束整体结果' if index + 1 == count else '下一个节点'}准备明确输入。"
+                        f"每行是一个独立方案，列是方案内步骤：本节点属于方案 {index // columns + 1}。\n"
+                        f"衔接：{'本方案第一步，从当前上下文开始' if index % columns == 0 else '承接本方案上一步骤'}；{'本方案已收尾' if (index % columns) + 1 == columns else '为方案内下一步骤做准备'}。方案之间彼此独立、互不承接。"
                     )
                 ),
                 tags=["Text" if english and generation_type == "文本" else generation_type, f"row-{index // columns + 1}", f"column-{index % columns + 1}"],
