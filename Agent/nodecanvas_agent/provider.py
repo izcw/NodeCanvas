@@ -143,10 +143,34 @@ class OpenAICompatibleProvider(CandidateProvider):
         payload = {
             "model": self.model_override or model,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user_text}],
-            "temperature": 0.65,
+            "temperature": 1 if "moonshot.cn" in self.base_url else 0.65,
             "stream": True,
-            "stream_options": {"include_usage": True},
         }
+        # Kimi K3 may accept the compatibility health-check request but reject
+        # streamed chat completions. Fall back to a normal completion so the
+        # UI can still apply the result to the current node.
+        if "moonshot.cn" in self.base_url:
+            payload["stream"] = False
+            try:
+                with httpx.Client(timeout=90.0) as client:
+                    response = client.post(
+                        f"{self.base_url}/chat/completions",
+                        headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
+                        json=payload,
+                    )
+                if response.is_error:
+                    try:
+                        detail = response.json().get("error", {}).get("message") or response.json().get("message")
+                    except (ValueError, AttributeError):
+                        detail = response.text[:240]
+                    raise RuntimeError(f"HTTP {response.status_code}: {detail or 'request rejected'}")
+                content = response.json()["choices"][0]["message"]["content"]
+                if not isinstance(content, str) or not content:
+                    raise ValueError("model returned no answer content")
+                yield "content", content
+                return
+            except (httpx.HTTPError, KeyError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"model provider failed: {exc}") from exc
         emitted = False
         fallback_lines: list[str] = []
         try:

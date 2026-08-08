@@ -1,5 +1,5 @@
-import { addEdge, Background, BackgroundVariant, BaseEdge, ConnectionMode, getBezierPath, Handle, MiniMap, NodeToolbar, Panel, Position, ReactFlow, SelectionMode, useReactFlow } from '@xyflow/react'
-import type { Connection, EdgeProps, OnConnectEnd, OnConnectStart, OnEdgesChange, OnMove, OnNodesChange, XYPosition } from '@xyflow/react'
+import { addEdge, Background, BackgroundVariant, BaseEdge, ConnectionMode, getBezierPath, Handle, MiniMap, NodeToolbar, Panel, Position, ReactFlow as BaseReactFlow, SelectionMode, useReactFlow } from '@xyflow/react'
+import type { Connection, EdgeProps, OnConnectEnd, OnConnectStart, OnEdgesChange, OnMove, OnNodesChange, ReactFlowProps, XYPosition } from '@xyflow/react'
 import { AlignHorizontalSpaceAround, AlignVerticalSpaceAround, BoxSelect, ChevronDown, Copy, Eye, FolderPlus, Grid2X2, Grid3X3, History, Link2, LocateFixed, Map, MessageSquareText, Minimize2, Plus, Redo2, Search, Share2, Trash2, Undo2, Workflow, X } from 'lucide-react'
 import { MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentRunOptions, CanvasEdge, CanvasNode, ModelConfig } from '../../types/canvas'
@@ -52,6 +52,9 @@ type ChatHistoryEntry = { id: string; category: ChatHistoryCategory; title: stri
 
 const edgeTypes = { flow: FlowEdge }
 const canvasNodeTypes = { ...nodeTypes, selectionConnector: SelectionConnectorNode, connectionPreview: ConnectionPreviewNode }
+const ReactFlow = (props: ReactFlowProps<CanvasNode, CanvasEdge>) => (
+  <BaseReactFlow {...props} onlyRenderVisibleElements={(props.nodes?.length ?? 0) > 60} />
+)
 const VIEWPORT_STORAGE_KEY = 'nodecanvas:viewport:default:v1'
 type StoredViewport = { x: number; y: number; zoom: number }
 
@@ -72,6 +75,7 @@ function readStoredViewport(): StoredViewport | null {
 export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdges, onAddText, onAddImage, onAddFile, onAddComment, onChatAnswer, onAgentRun, canUndo, canRedo, onUndo, onRedo, onNodeDragStart, onNodeDragStop, knowledgePreview, onCloseKnowledgePreview, leftCollapsed, agentCollapsed, onToggleLeft, onToggleAgent, readOnly, onCreateShareLink, modificationTargetIds, onToggleModificationTarget }: CanvasStageProps) {
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [zoom, setZoom] = useState(72)
+  const zoomLabelRef = useRef<number | null>(null)
   const [showMiniMap, setShowMiniMap] = useState(true)
   const [snapToGrid, setSnapToGrid] = useState(false)
   const [commentMode, setCommentMode] = useState(false)
@@ -105,6 +109,12 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   const suppressAddMenuUntilRef = useRef(0)
   const canvasPanGestureRef = useRef(false)
   const suppressNodeClickRef = useRef(false)
+  const updateZoomLabel = useCallback((viewportZoom: number) => {
+    const nextZoom = Math.round(viewportZoom * 100)
+    if (zoomLabelRef.current === nextZoom) return
+    zoomLabelRef.current = nextZoom
+    setZoom(nextZoom)
+  }, [])
   const { deleteElements, zoomTo, screenToFlowPosition, fitView, setCenter, setNodes, setViewport, getViewport } = useReactFlow<CanvasNode, CanvasEdge>()
   const interactionLocked = presentationMode || readOnly || modificationTargetIds !== undefined
   const nodeInteractionsLocked = interactionLocked || canvasPanning
@@ -301,10 +311,10 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     const restoredViewport = storedViewportRef.current
     if (restoredViewport) {
       void setViewport(restoredViewport, { duration: 0 })
-      setZoom(Math.round(restoredViewport.zoom * 100))
+      updateZoomLabel(restoredViewport.zoom)
     }
     requestAnimationFrame(() => { viewportRestoredRef.current = true })
-  }, [setViewport])
+  }, [setViewport, updateZoomLabel])
 
   useEffect(() => {
     const persistLatestViewport = () => {
@@ -319,7 +329,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   }, [readOnly])
 
   const onMove: OnMove = useCallback((_, viewport) => {
-    setZoom(Math.round(viewport.zoom * 100))
+    updateZoomLabel(viewport.zoom)
     latestViewportRef.current = viewport
     if (readOnly || !viewportRestoredRef.current) return
     if (viewportSaveTimerRef.current !== null) window.clearTimeout(viewportSaveTimerRef.current)
@@ -327,7 +337,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
       window.localStorage.setItem(VIEWPORT_STORAGE_KEY, JSON.stringify(viewport))
       viewportSaveTimerRef.current = null
     }, 180)
-  }, [readOnly])
+  }, [readOnly, updateZoomLabel])
   const onMoveStart: OnMove = useCallback((event) => {
     if (event?.type !== 'mousedown' && event?.type !== 'touchstart') return
     canvasPanGestureRef.current = true
@@ -341,7 +351,11 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     window.localStorage.setItem(VIEWPORT_STORAGE_KEY, JSON.stringify(viewport))
     viewportSaveTimerRef.current = null
   }, [readOnly])
-  const changeZoom = (value: number) => { setZoom(value); void zoomTo(value / 100, { duration: 0 }) }
+  const changeZoom = (value: number) => {
+    zoomLabelRef.current = value
+    setZoom(value)
+    void zoomTo(value / 100, { duration: 0 })
+  }
   const copyHistoryEntry = async (item: ChatHistoryEntry) => {
     try {
       await navigator.clipboard.writeText(item.prompt)
@@ -382,8 +396,29 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   }
   const duplicateSelectedNodes = () => {
     if (!selectedNodes.length) return
-    const copies = selectedNodes.map((node) => ({ ...node, id: `${node.type}-${crypto.randomUUID()}`, position: { x: node.position.x + 36, y: node.position.y + 36 }, selected: true }))
+    const idMap = new globalThis.Map(selectedNodes.map((node) => [node.id, `${node.type}-${crypto.randomUUID()}`]))
+    const copies = selectedNodes.map((node) => {
+      const { measured: _measured, width: _width, height: _height, ...cloneableNode } = node
+      return { ...cloneableNode, id: idMap.get(node.id)!, position: { x: node.position.x + 36, y: node.position.y + 36 }, selected: true, measured: undefined, width: undefined, height: undefined }
+    })
+    const copiedEdges = edges
+      .filter((edge) => idMap.has(edge.source) && idMap.has(edge.target))
+      .map((edge) => ({
+        ...edge,
+        id: `edge-${crypto.randomUUID()}`,
+        source: idMap.get(edge.source)!,
+        target: idMap.get(edge.target)!,
+        selected: false,
+      }))
     setNodes((current) => [...current.map((node) => ({ ...node, selected: false })), ...copies])
+    if (copiedEdges.length) {
+      // Let React Flow commit and measure the copied nodes first. Adding the
+      // edges in the next frame avoids a stale internal-node lookup where the
+      // edge exists in state but is not painted until a later refresh.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => setEdges((current) => [...current, ...copiedEdges]))
+      })
+    }
   }
 
   const setMenuAtPoint = useCallback((bounds: DOMRect, point: { x: number; y: number }, mode: MenuMode = 'add') => {
@@ -686,7 +721,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
       {!readOnly && <CanvasDock onAdd={() => setMenu({ mode: 'add' })} commentMode={commentMode} onToggleComment={() => { if (activeNodeExecutionLocked) return; setCommentMode((value) => !value); setActiveNodeId(null) }} onHistory={() => setHistoryOpen(true)} canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} />}
       <ViewportControls readOnly={readOnly} zoom={zoom} miniMapVisible={showMiniMap} snapToGrid={snapToGrid} hideEdges={hideEdges} onChangeZoom={changeZoom} onToggleMiniMap={() => setShowMiniMap((value) => !value)} onToggleSnap={() => setSnapToGrid((value) => !value)} onToggleEdges={() => setHideEdges((value) => !value)} onReset={() => void fitView({ duration: 180, padding: 0.22 })} />
       {!modificationTargetIds && (selectedNodes.length > 1 || (boxSelectionActive && selectedNodes.length === 1)) && <NodeToolbar nodeId={selectedNodeIds} position={Position.Top} align="center" isVisible className="selection-toolbar">{selectedNodes.length > 1 && <><button aria-label="打组"><FolderPlus size={16} /><span>打组</span></button><span className="selection-toolbar-divider" /><button aria-label="宫格排列" title="宫格排列" onClick={() => arrangeSelectedNodes('grid')}><Grid2X2 size={16} /><span>宫格</span></button><button aria-label="水平排列" title="水平排列" onClick={() => arrangeSelectedNodes('horizontal')}><AlignHorizontalSpaceAround size={16} /><span>水平</span></button><button aria-label="垂直排列" title="垂直排列" onClick={() => arrangeSelectedNodes('vertical')}><AlignVerticalSpaceAround size={16} /><span>垂直</span></button><span className="selection-toolbar-divider" /></>}<button aria-label="创建副本" title="创建副本" onClick={duplicateSelectedNodes}><Copy size={16} /><span>副本</span></button><span className="selection-toolbar-divider" /><button className="selection-delete-button" aria-label="删除选中节点" title="删除选中节点" onClick={() => void deleteElements({ nodes: selectedNodeIds.map((id) => ({ id })) })}><Trash2 size={16} /><span>删除</span></button></NodeToolbar>}
-      {activeNode && <NodeToolbar nodeId={activeNode.id} position={Position.Bottom} align="center" isVisible className="node-chat-panel"><NodeChatComposer key={activeNode.id} nodeId={activeNode.id} nodeTitle={activeNode.data.title} nodes={nodes} runStatus={activeNode.data.agentStatus} runSummary={activeNode.data.agentSummary} onClose={() => { if (!activeNodeExecutionLocked) setActiveNodeId(null) }} onSend={(prompt, model, options, actionMode, _assistantMode, signal, onProgress) => { setChatHistory((current) => [{ id: crypto.randomUUID(), category: actionMode === 'agent' ? 'agent' : activeNode.type, title: activeNode.data.title, prompt, createdAt: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }, ...current]); if (actionMode === 'agent') return onAgentRun(activeNode.id, prompt, model, options, signal); return onChatAnswer(activeNode.id, prompt, model, onProgress, signal) }} /></NodeToolbar>}
+      {activeNode && <NodeToolbar nodeId={activeNode.id} position={activeNode.position.y > 300 ? Position.Top : Position.Bottom} align={activeNode.position.x < 320 ? 'start' : activeNode.position.x > 640 ? 'end' : 'center'} data-side={activeNode.position.x > 640 ? 'end' : activeNode.position.x < 320 ? 'start' : 'center'} isVisible className="node-chat-panel"><NodeChatComposer key={activeNode.id} nodeId={activeNode.id} nodeTitle={activeNode.data.title} nodes={nodes} runStatus={activeNode.data.agentStatus} runSummary={activeNode.data.agentSummary} onClose={() => { if (!activeNodeExecutionLocked) setActiveNodeId(null) }} onSend={(prompt, model, options, actionMode, _assistantMode, signal, onProgress) => { setChatHistory((current) => [{ id: crypto.randomUUID(), category: actionMode === 'agent' ? 'agent' : activeNode.type, title: activeNode.data.title, prompt, createdAt: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }, ...current]); if (actionMode === 'agent') return onAgentRun(activeNode.id, prompt, model, options, signal); return onChatAnswer(activeNode.id, prompt, model, onProgress, signal) }} /></NodeToolbar>}
     </ReactFlow>
     </CanvasNodeReadOnlyContext.Provider>
     {searchOpen && <div className="node-search-overlay" onMouseDown={() => setSearchOpen(false)}><div className="node-search-dialog" onMouseDown={(event) => event.stopPropagation()}><div className="node-search-input"><Search size={18} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={onSearchKeyDown} placeholder="搜索节点…" /></div><div className="node-search-results">{searchResults.map((node, index) => <button key={node.id} className={index === highlightedSearchIndex ? 'highlighted' : ''} aria-selected={index === highlightedSearchIndex} onMouseEnter={() => setHighlightedSearchIndex(index)} onClick={() => chooseSearchResult(node)}><span>{node.data.title}</span><small>{node.type}</small></button>)}</div></div></div>}
@@ -745,5 +780,5 @@ function nearestHandle(rect: DOMRect, point: { x: number; y: number }) {
 }
 
 function CanvasTopbar({ readOnly, viewMode, onViewModeChange, onShare, shareOpen, shareMessage, onCopyShareLink, onDownloadImage, onSearch, presentationMode, onTogglePresentation, leftCollapsed, agentCollapsed, onToggleAgent }: { readOnly: boolean; viewMode: 'workflow' | 'storyboard'; onViewModeChange: (mode: 'workflow' | 'storyboard') => void; onShare: () => void; shareOpen: boolean; shareMessage: string; onCopyShareLink: () => void; onDownloadImage: () => void; onSearch: () => void; presentationMode: boolean; onTogglePresentation: () => void; leftCollapsed: boolean; agentCollapsed: boolean; onToggleAgent: () => void }) { const { setManagerOpen, tokenUsage } = useModelRegistry(); const totalTokens = tokenUsage.reduce((sum, usage) => sum + usage.totalTokens, 0); return <Panel position="top-center" className="canvas-topbar"><div className="topbar-left">{!readOnly && leftCollapsed && <FloatingButtonGroup className="left-collapsed-button"><div className="collapsed-workspace-bar"><BrandLogo /><span className="collapsed-canvas-divider" /><button className="collapsed-canvas-switcher">画布 1<ChevronDown size={14} /></button></div></FloatingButtonGroup>}{!readOnly && <FloatingButtonGroup className="view-switcher"><button className={viewMode === 'workflow' ? 'active' : ''} onClick={() => onViewModeChange('workflow')}><Workflow size={15} />工作流</button><button className={viewMode === 'storyboard' ? 'active' : ''} onClick={() => onViewModeChange('storyboard')}><BoxSelect size={15} />故事板</button></FloatingButtonGroup>}</div><div className="topbar-right"><FloatingButtonGroup className="canvas-actions"><div className="share-menu"><button aria-label="分享" onClick={onShare}><Share2 size={16} /></button>{shareOpen && <div className="share-popover"><strong>分享画布</strong><button onClick={onCopyShareLink}>复制只读链接</button><button onClick={onDownloadImage}>下载图片</button>{shareMessage && <small>{shareMessage}</small>}</div>}</div>{!readOnly && <button className="token-counter" aria-label="管理大模型与 Token 用量" onClick={() => setManagerOpen(true)}>{formatTokenCount(totalTokens)} Tokens</button>}<button aria-label="搜索节点" onClick={onSearch}><Search size={16} /></button></FloatingButtonGroup>{!readOnly && <button className="presentation-toggle" onClick={onTogglePresentation} aria-label={presentationMode ? "退出全屏预览" : "全屏预览"}>{presentationMode ? <Minimize2 size={16} /> : <Eye size={16} />}</button>}{!readOnly && agentCollapsed && <FloatingButtonGroup className="agent-collapsed-button"><button onClick={onToggleAgent} aria-label="展开 Agent"><Bot size={16} />Agent</button></FloatingButtonGroup>}</div></Panel> }
-function CanvasDock({ onAdd, commentMode, onToggleComment, onHistory, canUndo, canRedo, onUndo, onRedo }: { onAdd: () => void; commentMode: boolean; onToggleComment: () => void; onHistory: () => void; canUndo: boolean; canRedo: boolean; onUndo: () => void; onRedo: () => void }) { return <Panel position="bottom-center" className="canvas-dock"><FloatingButtonGroup><button className="add-primary" onClick={onAdd} aria-label="添加节点"><Plus size={22} /></button><button className={commentMode ? 'active comment-tool' : 'comment-tool'} onClick={onToggleComment} aria-label={commentMode ? '退出备注模式' : '进入备注模式'}><MessageSquareText size={18} /></button><span className="dock-divider" /><button onClick={onUndo} disabled={!canUndo} aria-label="撤回上一步" title="撤回上一步（⌘Z）"><Undo2 size={18} /></button><button onClick={onRedo} disabled={!canRedo} aria-label="下一步" title="下一步（⇧⌘Z）"><Redo2 size={18} /></button><button onClick={onHistory} aria-label="聊天历史"><History size={16} /></button></FloatingButtonGroup></Panel> }
+function CanvasDock({ onAdd, commentMode, onToggleComment, onHistory, canUndo, canRedo, onUndo, onRedo }: { onAdd: () => void; commentMode: boolean; onToggleComment: () => void; onHistory: () => void; canUndo: boolean; canRedo: boolean; onUndo: () => void; onRedo: () => void }) { return <Panel position="bottom-center" className="canvas-dock"><FloatingButtonGroup><button className="add-primary" onClick={onAdd} aria-label="添加节点"><Plus size={22} /></button><button className={commentMode ? 'active comment-tool' : 'comment-tool'} onClick={onToggleComment} aria-label={commentMode ? '退出备注模式' : '进入备注模式'}><MessageSquareText size={18} /></button><span className="dock-divider" /><button onClick={onUndo} disabled={!canUndo} aria-label="撤回上一步" data-tooltip="撤回上一步（⌘Z）" data-tooltip-position="top"><Undo2 size={18} /></button><button onClick={onRedo} disabled={!canRedo} aria-label="下一步" data-tooltip="下一步（⇧⌘Z）" data-tooltip-position="top"><Redo2 size={18} /></button><button onClick={onHistory} aria-label="聊天历史"><History size={16} /></button></FloatingButtonGroup></Panel> }
 function ViewportControls({ readOnly, zoom, miniMapVisible, snapToGrid, hideEdges, onChangeZoom, onToggleMiniMap, onToggleSnap, onToggleEdges, onReset }: { readOnly: boolean; zoom: number; miniMapVisible: boolean; snapToGrid: boolean; hideEdges: boolean; onChangeZoom: (value: number) => void; onToggleMiniMap: () => void; onToggleSnap: () => void; onToggleEdges: () => void; onReset: () => void }) { return <Panel position="bottom-left" className="viewport-controls"><FloatingButtonGroup><button className={miniMapVisible ? 'active' : ''} onClick={onToggleMiniMap} aria-label="显示或隐藏小地图"><Map size={19} /></button>{!readOnly && <button className={snapToGrid ? 'active' : ''} onClick={onToggleSnap} aria-label="切换网格吸附"><Grid3X3 size={19} /></button>}<button onClick={onReset} aria-label="完整显示全部节点"><LocateFixed size={19} /></button><button className={hideEdges ? 'active' : ''} onClick={onToggleEdges} aria-label="隐藏连接线"><Link2 size={19} /></button><span className="viewport-divider" /><input type="range" min="20" max="200" value={zoom} onChange={(event) => onChangeZoom(Number(event.target.value))} aria-label="画布缩放" /></FloatingButtonGroup></Panel> }

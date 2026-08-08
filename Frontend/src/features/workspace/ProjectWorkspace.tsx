@@ -1,12 +1,12 @@
-import { AlertTriangle, Check, ChevronDown, Clock3, FolderOpen, ImageOff, ImageUp, ListFilter, MoreHorizontal, Pencil, Plus, Search, Star, Trash2 } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Clock3, FolderOpen, ImageOff, ImageUp, ListFilter, MoreHorizontal, Pencil, Plus, Search, Star, Trash2 } from 'lucide-react'
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ACTIVE_PROJECT_STORAGE_KEY, copyWorkspaceProject, createWorkspaceProject, deleteWorkspaceProject, listWorkspaceProjects, renameWorkspaceProject, updateWorkspaceProjectCover } from '../../lib/api'
 import { NodeSelect, type NodeSelectOption } from '../../components/canvas/NodeSelect'
 
-type Project = { id: string; title: string; lastOpenedAt: number; favorite: boolean; cover?: string }
+type Project = { id: string; title: string; lastOpenedAt: number; modifiedAt: number; favorite: boolean; cover?: string }
 type WorkspaceContextValue = {
-  activeProject: Project
+  activeProject: Project | null
   projects: Project[]
   menuOpen: boolean
   setMenuOpen: (open: boolean) => void
@@ -26,14 +26,14 @@ type WorkspaceContextValue = {
 
 const STORAGE_KEY = 'nodecanvas:workspace-projects:v1'
 const VIEW_STORAGE_KEY = 'nodecanvas:workspace-view:v1'
-const defaultProject: Project = { id: 'default', title: '未命名工作区', lastOpenedAt: Date.now(), favorite: false }
+const WORKSPACE_AVATAR_URL = 'https://www.lumehub.duoyu.link/resource/liulan/kasumi/original/051a92ea0787_20260627.jpg'
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null)
 
 function loadProjects() {
   try {
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]') as Project[]
-    return stored.length ? stored : [defaultProject]
-  } catch { return [defaultProject] }
+    return stored.length ? stored.map((project) => ({ ...project, modifiedAt: project.modifiedAt || project.lastOpenedAt || Date.now() })) : []
+  } catch { return [] }
 }
 
 function loadWorkspaceView() {
@@ -45,7 +45,7 @@ function loadActiveProjectId() {
   const projectFromUrl = projectIdFromLocation()
   if (projectFromUrl) return projectFromUrl
   const stored = localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY)
-  return stored && projects.some((project) => project.id === stored) ? stored : projects[0].id
+  return stored && projects.some((project) => project.id === stored) ? stored : projects[0]?.id ?? null
 }
 
 function projectIdFromLocation() {
@@ -62,11 +62,28 @@ function navigateToWorkspace() {
 }
 
 function cacheActiveProjectId(projectId: string) {
-  try { localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, projectId) } catch (error) { console.warn('Unable to cache active project locally.', error) }
+  try {
+    if (projectId) localStorage.setItem(ACTIVE_PROJECT_STORAGE_KEY, projectId)
+    else localStorage.removeItem(ACTIVE_PROJECT_STORAGE_KEY)
+  } catch (error) { console.warn('Unable to cache active project locally.', error) }
 }
 
 function sortedProjects(projects: Project[]) {
   return [...projects].sort((a, b) => Number(b.favorite) - Number(a.favorite) || b.lastOpenedAt - a.lastOpenedAt)
+}
+
+function formatProjectModifiedAt(timestamp: number) {
+  const date = new Date(timestamp)
+  if (!Number.isFinite(date.getTime())) return '编辑于 日期未知'
+  const elapsed = Math.max(0, Date.now() - date.getTime())
+  const minute = 60 * 1000
+  const hour = 60 * minute
+  const day = 24 * hour
+  if (elapsed < minute) return '编辑于 刚刚'
+  if (elapsed < hour) return `编辑于 ${Math.floor(elapsed / minute)}分钟前`
+  if (elapsed < day) return `编辑于 ${Math.floor(elapsed / hour)}小时前`
+  if (elapsed <= 7 * day) return `编辑于 ${Math.floor(elapsed / day)}天前`
+  return `编辑于 ${new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(date)}`
 }
 
 export function ProjectWorkspaceProvider({ children, onProjectChange }: { children: ReactNode; onProjectChange: (project: Project, isNew: boolean) => void }) {
@@ -75,7 +92,7 @@ export function ProjectWorkspaceProvider({ children, onProjectChange }: { childr
   const [menuOpen, setMenuOpen] = useState(false)
   const [renamingProject, setRenamingProject] = useState<Project | null>(null)
   const [workspaceOpen, setWorkspaceOpen] = useState(loadWorkspaceView)
-  const activeProject = projects.find((project) => project.id === activeProjectId) ?? projects[0]
+  const activeProject = projects.find((project) => project.id === activeProjectId) ?? null
 
   useEffect(() => {
     try {
@@ -102,6 +119,7 @@ export function ProjectWorkspaceProvider({ children, onProjectChange }: { childr
           id: project.id,
           title: project.title,
           lastOpenedAt: Date.parse(project.updated_at) || Date.now(),
+          modifiedAt: Date.parse(project.updated_at) || Date.now(),
           favorite: localById.get(project.id)?.favorite ?? false,
           cover: project.cover_url ?? localById.get(project.id)?.cover,
         }))
@@ -116,7 +134,7 @@ export function ProjectWorkspaceProvider({ children, onProjectChange }: { childr
         setWorkspaceOpen(true)
         return
       }
-      const project = projects.find((item) => item.id === projectId) ?? { id: projectId, title: '项目', lastOpenedAt: Date.now(), favorite: false }
+      const project = projects.find((item) => item.id === projectId) ?? { id: projectId, title: '项目', lastOpenedAt: Date.now(), modifiedAt: Date.now(), favorite: false }
       setActiveProjectId(projectId)
       cacheActiveProjectId(projectId)
       setWorkspaceOpen(false)
@@ -140,7 +158,8 @@ export function ProjectWorkspaceProvider({ children, onProjectChange }: { childr
   }, [onProjectChange, projects])
 
   const createProject = useCallback(() => {
-    const project: Project = { id: crypto.randomUUID(), title: `未命名项目 ${projects.length + 1}`, lastOpenedAt: Date.now(), favorite: false }
+    const now = Date.now()
+    const project: Project = { id: crypto.randomUUID(), title: `未命名项目 ${projects.length + 1}`, lastOpenedAt: now, modifiedAt: now, favorite: false }
     setProjects((items) => [...items, project])
     setActiveProjectId(project.id)
     cacheActiveProjectId(project.id)
@@ -151,22 +170,23 @@ export function ProjectWorkspaceProvider({ children, onProjectChange }: { childr
     onProjectChange(project, true)
   }, [onProjectChange, projects.length])
 
-  const renameProject = useCallback((id = activeProject.id) => {
+  const renameProject = useCallback((id = activeProject?.id) => {
     const project = projects.find((item) => item.id === id)
     if (!project) return
     setRenamingProject(project)
     setMenuOpen(false)
-  }, [activeProject.id, projects])
+  }, [activeProject?.id, projects])
 
   const saveProjectRename = useCallback((id: string, title: string) => {
     const trimmed = title.trim()
     if (!trimmed) return
-    setProjects((items) => items.map((item) => item.id === id ? { ...item, title: trimmed } : item))
+    setProjects((items) => items.map((item) => item.id === id ? { ...item, title: trimmed, modifiedAt: Date.now() } : item))
     void renameWorkspaceProject(id, trimmed).catch(() => { /* The local directory remains usable offline. */ })
     setRenamingProject(null)
   }, [])
 
-  const deleteProject = useCallback((id = activeProject.id) => {
+  const deleteProject = useCallback((id = activeProject?.id) => {
+    if (!id || !activeProject) return
     if (projects.length === 1) return
     const project = projects.find((item) => item.id === id)
     if (!project) return
@@ -181,18 +201,19 @@ export function ProjectWorkspaceProvider({ children, onProjectChange }: { childr
     setMenuOpen(false)
     void deleteWorkspaceProject(id).catch(() => { /* The local directory remains usable offline. */ })
     if (activeProject.id === id) onProjectChange(nextActive, false)
-  }, [activeProject.id, onProjectChange, projects])
+  }, [activeProject, onProjectChange, projects])
 
   const createProjectCopy = useCallback((id: string) => {
     const source = projects.find((project) => project.id === id)
     if (!source) return
-    const copy: Project = { id: crypto.randomUUID(), title: `${source.title} 副本`, lastOpenedAt: Date.now(), favorite: false, cover: source.cover }
+    const now = Date.now()
+    const copy: Project = { id: crypto.randomUUID(), title: `${source.title} 副本`, lastOpenedAt: now, modifiedAt: now, favorite: false, cover: source.cover }
     setProjects((items) => [...items, copy])
     void copyWorkspaceProject(source.id, copy.id, copy.title).catch(() => { /* The local directory remains usable offline. */ })
   }, [projects])
 
   const setProjectCover = useCallback((id: string, cover?: string) => {
-    setProjects((items) => items.map((project) => project.id === id ? { ...project, cover } : project))
+    setProjects((items) => items.map((project) => project.id === id ? { ...project, cover, modifiedAt: Date.now() } : project))
     void updateWorkspaceProjectCover(id, cover).catch(() => { /* Keep the local cover when the server is temporarily unavailable. */ })
   }, [])
 
@@ -214,8 +235,8 @@ export function useProjectWorkspace() {
 export function DocumentTitle() {
   const { activeProject, workspaceOpen } = useProjectWorkspace()
   useEffect(() => {
-    document.title = workspaceOpen ? '工作台 - 灵构 NodeCanvas' : `${activeProject.title} - 灵构 NodeCanvas`
-  }, [activeProject.title, workspaceOpen])
+    document.title = workspaceOpen ? '工作台 - 灵构 NodeCanvas' : `${activeProject?.title ?? '未命名项目'} - 灵构 NodeCanvas`
+  }, [activeProject?.title, workspaceOpen])
   return null
 }
 
@@ -239,13 +260,13 @@ export function ProjectMenu() {
       <button onClick={() => renameProject()}><Pencil size={18} />重命名</button>
       <button onClick={createProject}><Plus size={19} />新建项目</button>
       <button className="danger" onClick={() => deleteProject()}><Trash2 size={18} />删除</button>
-      <small>当前：{activeProject.title}</small>
+      {activeProject && <small>当前：{activeProject.title}</small>}
     </div>}
   </div>
 }
 
 export function ProjectWorkspaceHome({ hidden = false }: { hidden?: boolean }) {
-  const { workspaceOpen, projects, activeProject, selectProject, createProject, toggleFavorite } = useProjectWorkspace()
+  const { workspaceOpen, projects, selectProject, createProject, toggleFavorite } = useProjectWorkspace()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<'all' | 'favorite' | 'recent'>('all')
   const filteredProjects = projects.filter((project) => (
@@ -262,18 +283,17 @@ export function ProjectWorkspaceHome({ hidden = false }: { hidden?: boolean }) {
     <div className="workspace-global-header">
       <div className="workspace-global-brand"><img src="/logo.png" alt="灵构" /><strong>灵构</strong></div>
       <nav aria-label="主导航"><button className="active"><FolderOpen size={16} />工作空间</button></nav>
-      <div className="workspace-global-actions"><span>我的工作区</span><button className="workspace-avatar" aria-label="用户菜单">N</button></div>
+      <div className="workspace-global-actions"><span>我的工作区</span><button className="workspace-avatar" aria-label="用户菜单"><img src={WORKSPACE_AVATAR_URL} alt="工作区头像" /></button></div>
     </div>
-    <header><div><span>工作空间</span><h2>所有项目</h2><p>收藏项目优先展示，其余按最近打开时间排序。</p></div><div className="workspace-project-tools"><label className="project-search"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" aria-label="搜索项目" /></label><NodeSelect className="workspace-filter-picker" value={filter} options={filterOptions} onChange={(value) => setFilter(value as typeof filter)} ariaLabel="筛选项目" /><button className="primary-project-button" onClick={createProject}><Plus size={18} />新建项目</button></div></header>
+    <header><div><span>工作空间</span><h2>所有项目（{projects.length}）</h2><p>收藏项目优先展示，其余按最近打开时间排序。</p></div><div className="workspace-project-tools"><label className="project-search"><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索" aria-label="搜索项目" /></label><NodeSelect className="workspace-filter-picker" value={filter} options={filterOptions} onChange={(value) => setFilter(value as typeof filter)} ariaLabel="筛选项目" /><button className="primary-project-button" onClick={createProject}><Plus size={18} />新建项目</button></div></header>
     <div className="project-grid">
       <button className="project-card project-create-card" onClick={createProject} aria-label="新建项目"><span><Plus size={27} /></span><strong>新建项目</strong><small>创建一个新的创意画布</small></button>
-      {filteredProjects.map((project) => <article className={`project-card ${project.id === activeProject.id ? 'active' : ''}`} key={project.id}>
-        <button className="project-card-main" onClick={() => selectProject(project.id)}><span className={`project-card-art ${project.cover ? 'has-image' : ''}`} style={project.cover ? { backgroundImage: `url("${project.cover}")` } : undefined} /><strong>{project.title}</strong><small>{project.id === activeProject.id ? '当前项目' : '点击打开项目'}</small></button>
+      {filteredProjects.map((project) => <article className="project-card" key={project.id}>
+        <button className="project-card-main" onClick={() => selectProject(project.id)}><span className={`project-card-art ${project.cover ? 'has-image' : ''}`} style={project.cover ? { backgroundImage: `url("${project.cover}")` } : undefined} /><strong>{project.title}</strong><small>{formatProjectModifiedAt(project.modifiedAt || project.lastOpenedAt)}</small></button>
         <button className={`favorite-project ${project.favorite ? 'active' : ''}`} onClick={() => toggleFavorite(project.id)} aria-label={project.favorite ? '取消收藏' : '收藏项目'}><Star size={18} fill={project.favorite ? 'currentColor' : 'none'} /></button>
         <ProjectCardMenu project={project} />
-        {project.id === activeProject.id && <span className="current-project"><Check size={13} />当前</span>}
       </article>)}
-      {filteredProjects.length === 0 && <div className="project-empty-state">没有匹配的项目</div>}
+      {filteredProjects.length === 0 && <div className="project-empty-state">{projects.length === 0 ? '还没有项目，点击新建项目开始' : '没有匹配的项目'}</div>}
     </div>
   </section>
 }

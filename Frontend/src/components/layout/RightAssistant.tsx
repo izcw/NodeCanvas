@@ -10,11 +10,14 @@ type RightAssistantProps = {
   collapsed: boolean
   nodes: CanvasNode[]
   onToggle: () => void
-  onAgentRun: (sourceId: string, prompt: string, model: ModelConfig, options: AgentRunOptions, signal?: AbortSignal) => void | Promise<void>
+  onAgentRun: (sourceId: string, prompt: string, model: ModelConfig, options: AgentRunOptions, signal?: AbortSignal, decision?: 'modify' | 'create') => void | Promise<void>
+  onPlanDelete: (sourceId: string, prompt: string, model: ModelConfig, signal?: AbortSignal) => Promise<{ nodeIds: string[]; explanation: string; graphFingerprint: string }>
+  onDeleteNodes: (nodeIds: string[], graphFingerprint: string) => boolean
   onAsk: (sourceId: string, prompt: string, model: ModelConfig, onDelta: (content: string) => void, signal?: AbortSignal) => Promise<string>
 }
 
-type PendingRun = { prompt: string; model: ModelConfig; options: AgentRunOptions }
+type MutationKind = 'delete' | 'generate' | 'modify'
+type PendingRun = { kind: MutationKind; prompt: string; model: ModelConfig; options: AgentRunOptions; deleteNodeIds?: string[]; deleteExplanation?: string; graphFingerprint?: string }
 type ChatMessage = { id: string; role: 'user' | 'assistant'; content: string }
 type ChatConversation = { id: string; title: string; createdAt: number; updatedAt: number; messages: ChatMessage[] }
 type ConversationState = { projectId: string; activeId: string; conversations: ChatConversation[] }
@@ -56,7 +59,18 @@ function relativeTime(timestamp: number) {
   return new Date(timestamp).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' })
 }
 
-export function RightAssistant({ collapsed, nodes, onToggle, onAgentRun, onAsk }: RightAssistantProps) {
+function classifyMutation(prompt: string): MutationKind | null {
+  if (/删除|移除|删掉|清除|delete|remove/i.test(prompt)) return 'delete'
+  if (/修改|改写|更新|调整|优化|润色|modify|update|rewrite|edit/i.test(prompt)) return 'modify'
+  if (/生成|创建|新增|添加|延展|扩展|制作|generate|create|add|expand/i.test(prompt)) return 'generate'
+  return null
+}
+
+function visiblePrompt(prompt: string) {
+  return prompt.replace(/\n\n\[用户引用节点：[\s\S]*?\]\s*$/, '').trim()
+}
+
+export function RightAssistant({ collapsed, nodes, onToggle, onAgentRun, onPlanDelete, onDeleteNodes, onAsk }: RightAssistantProps) {
   const projectId = currentProjectId()
   const [pendingRun, setPendingRun] = useState<PendingRun | null>(null)
   const [conversationState, setConversationState] = useState<ConversationState>(() => loadConversationState(projectId))
@@ -187,6 +201,7 @@ export function RightAssistant({ collapsed, nodes, onToggle, onAgentRun, onAsk }
 
   const deleteConversation = (conversationId: string) => {
     if (conversationId === runningConversationId) pauseAsk()
+    setConversationMenuOpen(false)
     setConversationState((current) => {
       const remaining = current.conversations.filter((item) => item.id !== conversationId)
       if (remaining.length === 0) {
@@ -241,7 +256,24 @@ export function RightAssistant({ collapsed, nodes, onToggle, onAgentRun, onAsk }
           </div>}
         </div>
         <div className="right-agent-dock">
-          {pendingRun && <section className="right-agent-confirm" role="alertdialog" aria-label="确认 Agent 生成"><strong>确认开始生成？</strong><p>Agent 将基于「{sourceNode?.data.title}」生成或修改画布内容。</p><div><button onClick={() => setPendingRun(null)}>取消</button><button className="confirm" onClick={() => { if (sourceNode) onAgentRun(sourceNode.id, pendingRun.prompt, pendingRun.model, pendingRun.options); updateMessages(conversationState.activeId, (current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: '已确认，开始生成画布内容。' }]); setPendingRun(null) }}>确认生成</button></div></section>}
+          {pendingRun && <section className="right-agent-confirm" role="alertdialog" aria-label={`确认 Agent ${pendingRun.kind === 'delete' ? '删除' : pendingRun.kind === 'modify' ? '修改' : '生成'}`}>
+            <strong>{pendingRun.kind === 'delete' ? '确认删除画布内容？' : pendingRun.kind === 'modify' ? '确认修改画布内容？' : '确认生成画布内容？'}</strong>
+            <p>{pendingRun.kind === 'delete' ? `${pendingRun.deleteExplanation ?? 'Agent 已完成删除目标分析。'} 确认后将删除这些节点及其连接线。` : pendingRun.kind === 'modify' ? `Agent 将基于「${sourceNode?.data.title ?? '当前节点'}」修改画布内容。` : `Agent 将基于「${sourceNode?.data.title ?? '当前节点'}」生成新的画布内容。`}</p>
+            <div><button onClick={() => setPendingRun(null)}>取消</button><button className="confirm" onClick={() => {
+              if (pendingRun.kind === 'delete') {
+                const deleted = onDeleteNodes(pendingRun.deleteNodeIds ?? [], pendingRun.graphFingerprint ?? '')
+                if (!deleted) {
+                  updateMessages(conversationState.activeId, (current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: '画布在分析期间发生了变化，未执行删除。请重新发送删除指令。' }])
+                  setPendingRun(null)
+                  return
+                }
+              } else if (sourceNode) {
+                onAgentRun(sourceNode.id, pendingRun.prompt, pendingRun.model, pendingRun.options, undefined, pendingRun.kind === 'modify' ? 'modify' : 'create')
+              }
+              updateMessages(conversationState.activeId, (current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: pendingRun.kind === 'delete' ? '已确认，已执行删除操作。' : pendingRun.kind === 'modify' ? '已确认，开始修改画布内容。' : '已确认，开始生成画布内容。' }])
+              setPendingRun(null)
+            }}>{pendingRun.kind === 'delete' ? '确认删除' : pendingRun.kind === 'modify' ? '确认修改' : '确认生成'}</button></div>
+          </section>}
           {sourceNode && <div className="right-agent-composer">
             <NodeChatComposer
               key={`${sourceNode.id}-${conversationState.activeId}`}
@@ -256,8 +288,10 @@ export function RightAssistant({ collapsed, nodes, onToggle, onAgentRun, onAsk }
               onStop={pauseAsk}
               onSend={async (prompt, model, options, _actionMode, assistantMode: AssistantMode, signal) => {
                 const conversationId = conversationState.activeId
-                updateMessages(conversationId, (current) => [...current, { id: crypto.randomUUID(), role: 'user', content: prompt }], prompt)
-                if (assistantMode === 'ask') {
+                const userPrompt = visiblePrompt(prompt)
+                updateMessages(conversationId, (current) => [...current, { id: crypto.randomUUID(), role: 'user', content: userPrompt }], userPrompt)
+                const mutation = classifyMutation(prompt)
+                if (assistantMode === 'ask' || !mutation) {
                   const controller = new AbortController()
                   askControllerRef.current?.abort()
                   askControllerRef.current = controller
@@ -294,10 +328,32 @@ export function RightAssistant({ collapsed, nodes, onToggle, onAgentRun, onAsk }
                   return
                 }
                 if (assistantMode === 'manual') {
-                  setPendingRun({ prompt, model, options })
+                  if (mutation === 'delete') {
+                    const plan = await onPlanDelete(sourceNode.id, prompt, model, signal)
+                    if (!plan.nodeIds.length) {
+                      updateMessages(conversationId, (current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: plan.explanation || '我无法确定要删除哪些节点，请指定节点名称。' }])
+                      return
+                    }
+                    setPendingRun({ kind: mutation, prompt, model, options, deleteNodeIds: plan.nodeIds, deleteExplanation: plan.explanation, graphFingerprint: plan.graphFingerprint })
+                  } else {
+                    setPendingRun({ kind: mutation, prompt, model, options })
+                  }
                   return
                 }
-                await onAgentRun(sourceNode.id, prompt, model, options, signal)
+                if (mutation === 'delete') {
+                  const plan = await onPlanDelete(sourceNode.id, prompt, model, signal)
+                  if (!plan.nodeIds.length) {
+                    updateMessages(conversationId, (current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: plan.explanation || '我无法确定要删除哪些节点，请指定节点名称。' }])
+                    return
+                  }
+                  if (!onDeleteNodes(plan.nodeIds, plan.graphFingerprint)) {
+                    updateMessages(conversationId, (current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: '画布在分析期间发生了变化，未执行删除。请重新发送删除指令。' }])
+                    return
+                  }
+                  updateMessages(conversationId, (current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: `已按 Agent 规划删除节点。${plan.explanation}` }])
+                  return
+                }
+                await onAgentRun(sourceNode.id, prompt, model, options, signal, mutation === 'modify' ? 'modify' : 'create')
                 updateMessages(conversationId, (current) => [...current, { id: crypto.randomUUID(), role: 'assistant', content: '已进入自动生成流程。' }])
               }}
             />

@@ -1,6 +1,6 @@
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
 import type { ModelConfig, ResponseLanguage } from '../../types/canvas'
-import { loadModelRegistry, persistModelRegistry } from './modelRegistry'
+import { hydrateModelRegistry, loadModelRegistry, persistModelOrder, persistModelRegistry } from './modelRegistry'
 
 const TOKEN_USAGE_STORAGE_KEY = 'nodecanvas:model-token-usage:v1'
 const RESPONSE_LANGUAGE_STORAGE_KEY = 'nodecanvas:response-language:v1'
@@ -27,6 +27,7 @@ type ModelRegistryValue = {
   managerOpen: boolean
   setManagerOpen: (open: boolean) => void
   saveModel: (model: ModelConfig) => void
+  reorderModels: (modelIds: string[]) => void
   deleteModel: (id: string) => void
   tokenUsage: ModelTokenUsage[]
   recordTokenUsage: (model: ModelConfig, usage: RunTokenUsage) => void
@@ -41,6 +42,13 @@ export function ModelRegistryProvider({ children }: { children: ReactNode }) {
   const [managerOpen, setManagerOpen] = useState(false)
   const [tokenUsage, setTokenUsage] = useState<ModelTokenUsage[]>(loadTokenUsage)
   const [responseLanguage, setResponseLanguageState] = useState<ResponseLanguage>(loadResponseLanguage)
+  useEffect(() => {
+    let active = true
+    void hydrateModelRegistry().then((savedModels) => {
+      if (active) setModels(savedModels)
+    })
+    return () => { active = false }
+  }, [])
   const value = useMemo<ModelRegistryValue>(() => ({
     models,
     managerOpen,
@@ -49,6 +57,14 @@ export function ModelRegistryProvider({ children }: { children: ReactNode }) {
       const next = current.some((item) => item.id === model.id)
         ? current.map((item) => item.id === model.id ? model : item)
         : [...current, model]
+      persistModelRegistry(next)
+      return next
+    }),
+    reorderModels: (modelIds) => setModels((current) => {
+      const byId = new Map(current.map((model) => [model.id, model]))
+      const next = [...modelIds.map((id) => byId.get(id)).filter((model): model is ModelConfig => Boolean(model))]
+      current.forEach((model) => { if (!modelIds.includes(model.id)) next.push(model) })
+      persistModelOrder(next.map((model) => model.id))
       persistModelRegistry(next)
       return next
     }),

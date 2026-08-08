@@ -9,7 +9,7 @@ export function BrandLogo({ compact = false, onClick }: BrandLogoProps) {
       <ProjectMenu />
       {!compact && (
         <div>
-          <strong className="workspace-name" title="当前项目">{activeProject.title}</strong>
+          <strong className="workspace-name" title="当前项目">{activeProject?.title ?? '工作空间'}</strong>
           <span>已保存至云端</span>
         </div>
       )}

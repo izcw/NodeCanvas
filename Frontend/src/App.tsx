@@ -378,7 +378,12 @@ function Workspace() {
       .map((edge) => runNodes.find((node) => node.id === edge.target))
       .filter((node): node is CanvasNode => Boolean(node))
     const shouldModify = /修改|改写|更新|调整|优化|润色|modify|update|rewrite|edit/i.test(prompt)
-    const mentionedTarget = directOutputs.find((node) => prompt.includes(`@${node.data.title}`))
+    const mentionIds = new Set((prompt.match(/\[用户引用节点：([^\]]+)\]/)?.[1] ?? '')
+      .split('；')
+      .map((item) => item.split('|', 1)[0].trim())
+      .filter(Boolean))
+    const mentionedTarget = directOutputs.find((node) => mentionIds.has(node.id))
+      ?? directOutputs.find((node) => prompt.includes(`@${node.data.title}`))
     const mentionedTargetIndex = mentionedTarget ? prompt.indexOf(`@${mentionedTarget.data.title}`) : -1
     const mentionPrefix = mentionedTargetIndex >= 0 ? prompt.slice(0, mentionedTargetIndex) : ''
     const directModifyMention = Boolean(mentionedTarget && /(?:修改|改写|更新|调整|优化|润色|modify|update|rewrite|edit)\s*(?:一下)?\s*$/i.test(mentionPrefix) && !/(参考|引用|借鉴|参考一下)\s*$/i.test(mentionPrefix))
@@ -496,6 +501,20 @@ function Workspace() {
       })
   }, [fitView, recordTokenUsage, responseLanguage, setEdges, setNodes])
 
+  const agentGraphFingerprint = useCallback((graphNodes = nodesRef.current, graphEdges = edgesRef.current) => JSON.stringify({
+    nodes: graphNodes.map((node) => ({ id: node.id, type: node.type, title: node.data.title, content: node.data.content ?? '', position: node.position })),
+    edges: graphEdges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, sourceHandle: edge.sourceHandle, targetHandle: edge.targetHandle })),
+  }), [])
+
+  const deleteAgentNodes = useCallback((nodeIds: string[], graphFingerprint: string) => {
+    if (graphFingerprint !== agentGraphFingerprint()) return false
+    const deleteIds = new Set(nodeIds)
+    if (!deleteIds.size || !nodeIds.every((id) => nodesRef.current.some((node) => node.id === id))) return false
+    setNodes((current) => current.filter((node) => !deleteIds.has(node.id)))
+    setEdges((current) => current.filter((edge) => !deleteIds.has(edge.source) && !deleteIds.has(edge.target)))
+    return true
+  }, [agentGraphFingerprint, setEdges, setNodes])
+
   const askAgent = useCallback(async (sourceId: string, prompt: string, model: ModelConfig, onDelta: (content: string) => void, signal?: AbortSignal) => {
     const clientRunId = crypto.randomUUID()
     const cancelOnAbort = () => { void cancelAgentRun(clientRunId).catch((error) => console.warn('Failed to cancel Agent chat.', error)) }
@@ -508,6 +527,26 @@ function Workspace() {
       signal?.removeEventListener('abort', cancelOnAbort)
     }
   }, [edges, nodes, recordTokenUsage, responseLanguage])
+
+  const planAgentDeletion = useCallback(async (sourceId: string, prompt: string, model: ModelConfig, signal?: AbortSignal) => {
+    const graphFingerprint = agentGraphFingerprint()
+    const catalog = nodesRef.current
+      .filter((node) => node.type !== 'comment')
+      .map((node) => `${node.id}\t${node.type}\t${node.data.title}\t${(node.data.content ?? '').slice(0, 96)}`)
+      .join('\n')
+    const planningPrompt = `你现在只负责为删除操作选择目标节点，不要生成内容，也不要执行删除。\n用户原始指令：${prompt}\n\n当前画布节点目录（每行依次是 id、类型、标题、内容摘要）：\n${catalog}\n\n请严格只返回 JSON，不要 Markdown，不要解释：{"node_ids":["必须来自目录的id"],"explanation":"用中文简要说明选择依据；如果无法确定目标则 node_ids 为空并说明需要用户补充什么"}。如果用户要求“删除全部但保留 N 个”，请根据用户语义选择应该保留的节点并返回其余节点的 id；如果没有足够信息确定具体节点，返回空数组。`
+    const answer = await askAgent(sourceId, planningPrompt, model, () => undefined, signal)
+    const validIds = new Set(nodesRef.current.map((node) => node.id))
+    try {
+      const jsonText = answer.match(/\{[\s\S]*\}/)?.[0]
+      if (!jsonText) throw new Error('模型没有返回删除目标 JSON。')
+      const parsed = JSON.parse(jsonText) as { node_ids?: unknown; explanation?: unknown }
+      const nodeIds = Array.isArray(parsed.node_ids) ? parsed.node_ids.filter((id): id is string => typeof id === 'string' && validIds.has(id)) : []
+      return { nodeIds, explanation: typeof parsed.explanation === 'string' ? parsed.explanation : '请指定要删除的节点名称。', graphFingerprint }
+    } catch {
+      return { nodeIds: [], explanation: '我无法从模型结果中确认要删除哪些节点，请指定节点名称。', graphFingerprint }
+    }
+  }, [agentGraphFingerprint, askAgent])
 
   const confirmationAnchor = pendingAgentModification
     ? (document.querySelector<HTMLElement>(`.react-flow__node[data-id="${pendingAgentModification.sourceId}"] .node-chat-send`)
@@ -565,7 +604,7 @@ function Workspace() {
     {!readOnlyShare && <LeftSidebar collapsed={leftCollapsed} tab={sidebarTab} groups={groups} nodes={nodes} knowledge={knowledge} onTabChange={setSidebarTab} onToggle={() => setLeftCollapsed((value) => !value)} onFocusGroup={focusGroup} onRenameNode={(id, title) => setNodes((current) => current.map((node) => node.id === id ? { ...node, data: { ...node.data, title } } : node))} onUploadKnowledge={chooseKnowledge} onSelectKnowledge={setActiveKnowledge} onAttachKnowledge={attachKnowledgeToCanvas} onDeleteKnowledge={removeKnowledge} onRetryKnowledge={retryKnowledge} onNewCanvas={() => { setNodes([]); setEdges([]); setActiveKnowledge(null); setSidebarTab('canvas') }} />}
     {!readOnlyShare && !leftCollapsed && <button className="sidebar-resizer sidebar-resizer--left" style={{ left: leftWidth - 4 }} aria-label="调整左侧栏宽度" onPointerDown={(event) => resizeSidebar('left', event)} />}
     <CanvasStage nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} setEdges={setEdges} onAddText={(position, onCreated) => addText('', position, onCreated)} onAddImage={addImage} onAddFile={chooseFile} onAddComment={addComment} onChatAnswer={editCurrentNode} onAgentRun={runAgentNode} canUndo={historyState.canUndo} canRedo={historyState.canRedo} onUndo={undo} onRedo={redo} onNodeDragStart={onNodeDragStart} onNodeDragStop={onNodeDragStop} knowledgePreview={activeKnowledge} onCloseKnowledgePreview={() => setActiveKnowledge(null)} leftCollapsed={leftCollapsed} agentCollapsed={agentCollapsed} onToggleLeft={() => setLeftCollapsed((value) => !value)} onToggleAgent={() => setAgentCollapsed((value) => !value)} readOnly={readOnlyShare} onCreateShareLink={shareCurrentCanvas} modificationTargetIds={pendingAgentModification?.selectedTargetIds} onToggleModificationTarget={toggleModificationTarget} />
-    {!readOnlyShare && <RightAssistant collapsed={agentCollapsed} nodes={nodes} onToggle={() => setAgentCollapsed((value) => !value)} onAgentRun={(sourceId, prompt, model, options, signal) => runAgentNode(sourceId, prompt, model, options, signal)} onAsk={askAgent} />}
+    {!readOnlyShare && <RightAssistant collapsed={agentCollapsed} nodes={nodes} onToggle={() => setAgentCollapsed((value) => !value)} onAgentRun={(sourceId, prompt, model, options, signal, decision) => runAgentNode(sourceId, prompt, model, options, signal, decision)} onPlanDelete={planAgentDeletion} onDeleteNodes={deleteAgentNodes} onAsk={askAgent} />}
     {!readOnlyShare && !agentCollapsed && <button className="sidebar-resizer sidebar-resizer--right" style={{ right: rightWidth - 4 }} aria-label="调整右侧栏宽度" onPointerDown={(event) => resizeSidebar('right', event)} />}
     {pendingAgentModification && confirmationAnchor && <section className="agent-modification-popover" role="dialog" aria-label="确认 Agent 执行方式" style={{ left: confirmationAnchor.right, top: confirmationAnchor.top - 10 }}><span>将修改</span><div className="agent-modification-targets">{pendingAgentModification.targets.map((target) => <button key={target.id} className={pendingAgentModification.selectedTargetIds.includes(target.id) ? 'selected' : ''} onClick={() => toggleModificationTarget(target.id)}>@{target.title}</button>)}</div><small>点击节点名称可增加或取消修改；画布中的紫色高亮表示会被修改。</small><footer><button onClick={() => { setNodes((current) => current.map((node) => setModificationTargetClass(node, false))); setPendingAgentModification(null) }}>取消</button>{pendingAgentModification.selectedTargetIds.length === 0 ? <button className="agent-modification-create" onClick={() => { const pending = pendingAgentModification; setNodes((current) => current.map((node) => setModificationTargetClass(node, false))); setPendingAgentModification(null); runAgentNode(pending.sourceId, pending.prompt, pending.model, pending.options, undefined, 'create') }}>新生成</button> : <button className="agent-modification-confirm" onClick={() => { const pending = pendingAgentModification; const selectedIds = pending.selectedTargetIds; setNodes((current) => current.map((node) => setModificationTargetClass(node, false))); setPendingAgentModification(null); runAgentNode(pending.sourceId, pending.prompt, pending.model, { ...pending.options, targetNodeIds: selectedIds }, undefined, 'modify') }}>确认修改</button>}</footer></section>}
   </main></ProjectWorkspaceProvider>
