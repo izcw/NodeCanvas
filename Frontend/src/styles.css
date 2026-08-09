@@ -1532,8 +1532,7 @@ textarea:focus-visible {
   transform: translate(12px, 12px);
 }
 
-.node-chat-panel { z-index: 20000 !important; margin: 0 40px 0 0 !important; pointer-events: all; }
-.node-chat-panel[data-side="end"] > .node-chat-composer { transform: translateX(-48px); }
+.node-chat-panel { z-index: 20000 !important; margin: 0 !important; pointer-events: all; }
 .app-shell:has(.node-chat-panel) .left-sidebar { z-index: 1; }
 .app-shell:has(.node-chat-panel) .canvas-stage { z-index: 2; overflow: visible; }
 .selection-toolbar {

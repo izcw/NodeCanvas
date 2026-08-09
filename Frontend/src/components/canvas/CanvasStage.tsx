@@ -13,7 +13,7 @@ import { FloatingButtonGroup } from '../ui/FloatingButtonGroup'
 import { Bot } from 'lucide-react'
 import { formatTokenCount, useModelRegistry } from '../../features/models/ModelRegistryContext'
 import { toPng } from 'html-to-image'
-import { clearAgentRuns, currentProjectId, loadAgentRuns } from '../../lib/api'
+import { clearAgentRuns, loadAgentRuns } from '../../lib/api'
 
 type CanvasStageProps = {
   nodes: CanvasNode[]
@@ -40,6 +40,7 @@ type CanvasStageProps = {
   onToggleLeft: () => void
   onToggleAgent: () => void
   readOnly: boolean
+  projectId: string
   onCreateShareLink: () => Promise<string>
   modificationTargetIds?: string[]
   onToggleModificationTarget?: (id: string) => void
@@ -55,24 +56,28 @@ const canvasNodeTypes = { ...nodeTypes, selectionConnector: SelectionConnectorNo
 const ReactFlow = (props: ReactFlowProps<CanvasNode, CanvasEdge>) => (
   <BaseReactFlow {...props} onlyRenderVisibleElements={(props.nodes?.length ?? 0) > 60} />
 )
-const VIEWPORT_STORAGE_KEY = 'nodecanvas:viewport:default:v1'
 type StoredViewport = { x: number; y: number; zoom: number }
 
-function readStoredViewport(): StoredViewport | null {
+function viewportStorageKey(projectId: string) {
+  return `nodecanvas:viewport:${encodeURIComponent(projectId)}:v1`
+}
+
+function readStoredViewport(projectId: string): StoredViewport | null {
   if (typeof window === 'undefined') return null
+  const storageKey = viewportStorageKey(projectId)
   try {
-    const raw = window.localStorage.getItem(VIEWPORT_STORAGE_KEY)
+    const raw = window.localStorage.getItem(storageKey)
     const viewport = raw ? JSON.parse(raw) as Partial<StoredViewport> : null
     return viewport && [viewport.x, viewport.y, viewport.zoom].every((value) => typeof value === 'number' && Number.isFinite(value))
       ? { x: viewport.x!, y: viewport.y!, zoom: viewport.zoom! }
       : null
   } catch {
-    window.localStorage.removeItem(VIEWPORT_STORAGE_KEY)
+    window.localStorage.removeItem(storageKey)
     return null
   }
 }
 
-export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdges, onAddText, onAddImage, onAddFile, onAddComment, onChatAnswer, onAgentRun, canUndo, canRedo, onUndo, onRedo, onNodeDragStart, onNodeDragStop, knowledgePreview, onCloseKnowledgePreview, leftCollapsed, agentCollapsed, onToggleLeft, onToggleAgent, readOnly, onCreateShareLink, modificationTargetIds, onToggleModificationTarget }: CanvasStageProps) {
+export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdges, onAddText, onAddImage, onAddFile, onAddComment, onChatAnswer, onAgentRun, canUndo, canRedo, onUndo, onRedo, onNodeDragStart, onNodeDragStop, knowledgePreview, onCloseKnowledgePreview, leftCollapsed, agentCollapsed, onToggleLeft, onToggleAgent, readOnly, projectId, onCreateShareLink, modificationTargetIds, onToggleModificationTarget }: CanvasStageProps) {
   const [menu, setMenu] = useState<MenuState | null>(null)
   const [zoom, setZoom] = useState(72)
   const zoomLabelRef = useRef<number | null>(null)
@@ -92,7 +97,6 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyFilter, setHistoryFilter] = useState<ChatHistoryCategory | 'all'>('all')
   const [chatHistory, setChatHistory] = useState<ChatHistoryEntry[]>([])
-  const projectId = currentProjectId()
   const [copiedHistoryId, setCopiedHistoryId] = useState<string | null>(null)
   const stageRef = useRef<HTMLElement>(null)
   const [selectionDragPosition, setSelectionDragPosition] = useState<XYPosition | null>(null)
@@ -102,7 +106,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   const [pendingConnection, setPendingConnection] = useState<{ source: string; sourceHandle: string; canvasPosition: XYPosition } | null>(null)
   const viewportSaveTimerRef = useRef<number | null>(null)
   const viewportRestoredRef = useRef(false)
-  const storedViewportRef = useRef<StoredViewport | null>(readOnly ? null : readStoredViewport())
+  const storedViewportRef = useRef<StoredViewport | null>(readOnly ? null : readStoredViewport(projectId))
   const latestViewportRef = useRef<StoredViewport | null>(storedViewportRef.current)
   const panePointerRef = useRef<{ x: number; y: number; moved: boolean } | null>(null)
   const selectionGestureRef = useRef(false)
@@ -318,7 +322,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
 
   useEffect(() => {
     const persistLatestViewport = () => {
-      if (!readOnly && latestViewportRef.current) window.localStorage.setItem(VIEWPORT_STORAGE_KEY, JSON.stringify(latestViewportRef.current))
+      if (!readOnly && latestViewportRef.current) window.localStorage.setItem(viewportStorageKey(projectId), JSON.stringify(latestViewportRef.current))
     }
     window.addEventListener('pagehide', persistLatestViewport)
     return () => {
@@ -326,7 +330,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
       persistLatestViewport()
       window.removeEventListener('pagehide', persistLatestViewport)
     }
-  }, [readOnly])
+  }, [projectId, readOnly])
 
   const onMove: OnMove = useCallback((_, viewport) => {
     updateZoomLabel(viewport.zoom)
@@ -334,10 +338,10 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     if (readOnly || !viewportRestoredRef.current) return
     if (viewportSaveTimerRef.current !== null) window.clearTimeout(viewportSaveTimerRef.current)
     viewportSaveTimerRef.current = window.setTimeout(() => {
-      window.localStorage.setItem(VIEWPORT_STORAGE_KEY, JSON.stringify(viewport))
+      window.localStorage.setItem(viewportStorageKey(projectId), JSON.stringify(viewport))
       viewportSaveTimerRef.current = null
     }, 180)
-  }, [readOnly, updateZoomLabel])
+  }, [projectId, readOnly, updateZoomLabel])
   const onMoveStart: OnMove = useCallback((event) => {
     if (event?.type !== 'mousedown' && event?.type !== 'touchstart') return
     canvasPanGestureRef.current = true
@@ -348,9 +352,9 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     latestViewportRef.current = viewport
     if (readOnly || !viewportRestoredRef.current) return
     if (viewportSaveTimerRef.current !== null) window.clearTimeout(viewportSaveTimerRef.current)
-    window.localStorage.setItem(VIEWPORT_STORAGE_KEY, JSON.stringify(viewport))
+    window.localStorage.setItem(viewportStorageKey(projectId), JSON.stringify(viewport))
     viewportSaveTimerRef.current = null
-  }, [readOnly])
+  }, [projectId, readOnly])
   const changeZoom = (value: number) => {
     zoomLabelRef.current = value
     setZoom(value)
@@ -721,7 +725,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
       {!readOnly && <CanvasDock onAdd={() => setMenu({ mode: 'add' })} commentMode={commentMode} onToggleComment={() => { if (activeNodeExecutionLocked) return; setCommentMode((value) => !value); setActiveNodeId(null) }} onHistory={() => setHistoryOpen(true)} canUndo={canUndo} canRedo={canRedo} onUndo={onUndo} onRedo={onRedo} />}
       <ViewportControls readOnly={readOnly} zoom={zoom} miniMapVisible={showMiniMap} snapToGrid={snapToGrid} hideEdges={hideEdges} onChangeZoom={changeZoom} onToggleMiniMap={() => setShowMiniMap((value) => !value)} onToggleSnap={() => setSnapToGrid((value) => !value)} onToggleEdges={() => setHideEdges((value) => !value)} onReset={() => void fitView({ duration: 180, padding: 0.22 })} />
       {!modificationTargetIds && (selectedNodes.length > 1 || (boxSelectionActive && selectedNodes.length === 1)) && <NodeToolbar nodeId={selectedNodeIds} position={Position.Top} align="center" isVisible className="selection-toolbar">{selectedNodes.length > 1 && <><button aria-label="打组"><FolderPlus size={16} /><span>打组</span></button><span className="selection-toolbar-divider" /><button aria-label="宫格排列" title="宫格排列" onClick={() => arrangeSelectedNodes('grid')}><Grid2X2 size={16} /><span>宫格</span></button><button aria-label="水平排列" title="水平排列" onClick={() => arrangeSelectedNodes('horizontal')}><AlignHorizontalSpaceAround size={16} /><span>水平</span></button><button aria-label="垂直排列" title="垂直排列" onClick={() => arrangeSelectedNodes('vertical')}><AlignVerticalSpaceAround size={16} /><span>垂直</span></button><span className="selection-toolbar-divider" /></>}<button aria-label="创建副本" title="创建副本" onClick={duplicateSelectedNodes}><Copy size={16} /><span>副本</span></button><span className="selection-toolbar-divider" /><button className="selection-delete-button" aria-label="删除选中节点" title="删除选中节点" onClick={() => void deleteElements({ nodes: selectedNodeIds.map((id) => ({ id })) })}><Trash2 size={16} /><span>删除</span></button></NodeToolbar>}
-      {activeNode && <NodeToolbar nodeId={activeNode.id} position={activeNode.position.y > 300 ? Position.Top : Position.Bottom} align={activeNode.position.x < 320 ? 'start' : activeNode.position.x > 640 ? 'end' : 'center'} data-side={activeNode.position.x > 640 ? 'end' : activeNode.position.x < 320 ? 'start' : 'center'} isVisible className="node-chat-panel"><NodeChatComposer key={activeNode.id} nodeId={activeNode.id} nodeTitle={activeNode.data.title} nodes={nodes} runStatus={activeNode.data.agentStatus} runSummary={activeNode.data.agentSummary} onClose={() => { if (!activeNodeExecutionLocked) setActiveNodeId(null) }} onSend={(prompt, model, options, actionMode, _assistantMode, signal, onProgress) => { setChatHistory((current) => [{ id: crypto.randomUUID(), category: actionMode === 'agent' ? 'agent' : activeNode.type, title: activeNode.data.title, prompt, createdAt: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }, ...current]); if (actionMode === 'agent') return onAgentRun(activeNode.id, prompt, model, options, signal); return onChatAnswer(activeNode.id, prompt, model, onProgress, signal) }} /></NodeToolbar>}
+      {activeNode && <NodeToolbar nodeId={activeNode.id} position={Position.Bottom} align="start" isVisible className="node-chat-panel"><NodeChatComposer key={activeNode.id} nodeId={activeNode.id} nodeTitle={activeNode.data.title} nodes={nodes} runStatus={activeNode.data.agentStatus} runSummary={activeNode.data.agentSummary} onClose={() => { if (!activeNodeExecutionLocked) setActiveNodeId(null) }} onSend={(prompt, model, options, actionMode, _assistantMode, signal, onProgress) => { setChatHistory((current) => [{ id: crypto.randomUUID(), category: actionMode === 'agent' ? 'agent' : activeNode.type, title: activeNode.data.title, prompt, createdAt: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }, ...current]); if (actionMode === 'agent') return onAgentRun(activeNode.id, prompt, model, options, signal); return onChatAnswer(activeNode.id, prompt, model, onProgress, signal) }} /></NodeToolbar>}
     </ReactFlow>
     </CanvasNodeReadOnlyContext.Provider>
     {searchOpen && <div className="node-search-overlay" onMouseDown={() => setSearchOpen(false)}><div className="node-search-dialog" onMouseDown={(event) => event.stopPropagation()}><div className="node-search-input"><Search size={18} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={onSearchKeyDown} placeholder="搜索节点…" /></div><div className="node-search-results">{searchResults.map((node, index) => <button key={node.id} className={index === highlightedSearchIndex ? 'highlighted' : ''} aria-selected={index === highlightedSearchIndex} onMouseEnter={() => setHighlightedSearchIndex(index)} onClick={() => chooseSearchResult(node)}><span>{node.data.title}</span><small>{node.type}</small></button>)}</div></div></div>}

@@ -219,6 +219,7 @@ class AgentWorkflow:
         for index, candidate in enumerate(candidates):
             row = index // request.grid.columns
             column = index % request.grid.columns
+            previous_in_plan_id = source.id if column == 0 else operations[-1].node_id
             operations.append(
                 GraphOperation(
                     kind="create_node",
@@ -231,7 +232,7 @@ class AgentWorkflow:
                         x=origin_x + column * (output_width + horizontal_gap),
                         y=origin_y + row * (output_height + vertical_gap),
                     ),
-                    source_node_id=request.source_node_id,
+                    source_node_id=previous_in_plan_id,
                     asset_url=candidate.asset_url,
                 )
             )

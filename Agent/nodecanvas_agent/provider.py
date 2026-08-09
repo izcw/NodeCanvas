@@ -67,12 +67,24 @@ class OpenAICompatibleProvider(CandidateProvider):
         self.capabilities = capabilities or []
 
     def generate(self, *, context: ContextSnapshot, count: int, model: str, generation_type: str, rows: int = 1, columns: int = 1) -> ProviderGeneration:
+        single_plan_title_rule = (
+            "当前为单行方案时，title 必须使用“1.0 具体方案名称 · 具体思路步骤”格式，"
+            "例如“1.0 轻量电竞体验方案 · 锁定核心玩家痛点”；"
+            "方案名称要概括该方案的独特策略，步骤要说明这一格实际推进的思路或动作。"
+            "整个 title（含分隔符）必须控制在 20 个字以内，优先保留方案名称和步骤动词。"
+            "标题编号使用行.列的层级格式：第一行从 1.0 开始，后续列为 1.1、1.2；下一行从 2.0 开始。"
+            "不得写“方案一”“方案 1”“Plan 1”或其他仅含序号的标题。"
+            if rows == 1
+            else "多行时 title 必须以行.列层级编号标明所属方案，并直接说明具体方案与步骤，不能只使用无意义的序号。"
+        )
         matrix_rule = (
             f"本次输出共 {count} 个节点，按从左到右、从上到下的行优先顺序返回。"
-            f"当前宫格为 {rows} 行 x {columns} 列：每一行代表一个完全独立的方案，列代表该方案内的连续步骤，行内后一步骤必须承接前一步骤。"
-            f"只有一行时即为单一方案，其列就是该方案的连续步骤（如 1x{columns} 是同一个方案按步骤延续）；"
-            f"有多行时各行方案彼此独立、互不承接（如 {rows}x1 是 {rows} 个完全不同的方案）。"
-            "title 要直接标明方案与步骤（如“方案一 · 步骤 1”），content 要说明在本方案内的前后衔接；"
+            f"当前宫格为 {rows} 行 x {columns} 列，必须遵循以下宫格语义："
+            f"1xN 是一个方案的 N 个连续延展步骤；Nx1 是基于同一上下文的 N 个不同方案；NxM 是 N 个不同方案各自包含 M 个连续延展步骤。"
+            "无论宫格尺寸如何，左侧直接输入提供的是所有方案共同的生成依据和边界；"
+            "方案可以改变策略、内容角度或执行方式，但必须从该上下文推导，不能脱离、替换或与其冲突。"
+            + single_plan_title_rule
+            + "content 要说明在本方案内的前后衔接；"
             "禁止跨方案承接，禁止把不同方案写成同一个流程的先后阶段，也禁止生成彼此无关的盲盒内容。"
             "若任务是旅行规划：每行默认代表一天，每列按时间先后代表当天行程；"
             "三列优先使用上午/下午/晚上，四列优先使用上午/中午/下午/晚上；"
@@ -80,8 +92,11 @@ class OpenAICompatibleProvider(CandidateProvider):
         )
         system = (
             "你是 NodeCanvas 的创意策划 Agent。只使用给定上下文，返回严格 JSON。"
+            "不得使用 Markdown 代码围栏；所有字符串中的换行、反斜杠和双引号必须按 JSON 规范转义。"
             "生成必须综合理解并严格依据链接到本 Agent 的全部上下文（左侧输入节点）的主题与具体信息；"
             "当前节点内容仅作参考，禁止只围绕当前节点生成与上下文无关的内容，也禁止退化为通用模板。"
+            "每次 create 生成都是一轮独立执行：当前节点仅作为上下文，不能让新节点继承、续写或复用当前节点的编号与标题；"
+            "新节点 title 必须直接描述本次用户要求的交付物或策略。例如要求“输出 PRD 与原型”时，title 应为“1.0 PRD 与原型 …”，而不是复制“3.3 MVP 人机协同实现与验证”。"
             "输出对象必须包含 candidates 数组，每项包含 title、content、tags、reason。"
             + matrix_rule
             + f"生成 {count} 个{generation_type}节点；同一方案内相互衔接，不同方案彼此独立。"
@@ -119,7 +134,7 @@ class OpenAICompatibleProvider(CandidateProvider):
             response.raise_for_status()
             body = response.json()
             content = body["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
+            parsed = _load_model_json(content)
             candidates = [Candidate.model_validate(item) for item in parsed.get("candidates", [])]
             if len(candidates) < count:
                 raise ValueError("model returned fewer candidates than requested")
@@ -291,6 +306,65 @@ def _extract_image_urls(value: object) -> list[str]:
     return list(dict.fromkeys(urls))
 
 
+def _load_model_json(content: object) -> dict[str, object]:
+    """Parse structured model output, repairing common JSON-string mistakes."""
+    if not isinstance(content, str):
+        raise ValueError("model returned a non-text JSON response")
+    cleaned = re.sub(r"^\s*```(?:json)?\s*|\s*```\s*$", "", content.strip(), flags=re.I)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as original_error:
+        repaired = _repair_json_strings(cleaned)
+        repaired = re.sub(r",\s*([}\]])", r"\1", repaired)
+        try:
+            parsed = json.loads(repaired)
+        except json.JSONDecodeError as repaired_error:
+            raise ValueError(f"model returned invalid JSON: {repaired_error.msg}") from original_error
+    if not isinstance(parsed, dict):
+        raise ValueError("model JSON response must be an object")
+    return parsed
+
+
+def _repair_json_strings(value: str) -> str:
+    """Escape bare newlines and quotes that occasionally appear in LLM strings."""
+    result: list[str] = []
+    in_string = False
+    escaped = False
+    length = len(value)
+    for index, char in enumerate(value):
+        if escaped:
+            result.append(char)
+            escaped = False
+            continue
+        if char == "\\" and in_string:
+            result.append(char)
+            escaped = True
+            continue
+        if char == '"':
+            if not in_string:
+                in_string = True
+            else:
+                following = value[index + 1:]
+                next_nonspace = next((item for item in following if not item.isspace()), "")
+                if next_nonspace not in {",", "}", "]", ":"}:
+                    result.append("\\")
+                else:
+                    in_string = False
+            result.append(char)
+            continue
+        if in_string and char == "\n":
+            result.append("\\n")
+            continue
+        if in_string and char == "\r":
+            result.append("\\r")
+            continue
+        if in_string and char == "\t":
+            result.append("\\t")
+            continue
+        result.append(char)
+    return "".join(result)
+
+
 class DeterministicProvider(CandidateProvider):
     """Offline provider used for local development and tests, not a fake HTTP service."""
 
@@ -303,6 +377,7 @@ class DeterministicProvider(CandidateProvider):
         focus_title = context.focus_node.title if context.focus_node else "当前节点"
         focus_content = context.focus_node.content if context.focus_node else ""
         source_titles = "、".join([focus_title, *(item.title for item in context.direct_inputs)])
+        context_details = "；".join(item.content for item in context.direct_inputs if item.content.strip()) or focus_content
         current_content = context.current_node.content if context.current_node else ""
         travel_text = "\n".join([context.goal, focus_title, focus_content, *(item.title + "\n" + item.content for item in context.direct_inputs)])
         is_travel_plan = bool(re.search(r"旅行|旅游|行程|景点|酒店|住宿|出发|目的地|预算|travel|trip|itinerary", travel_text, re.I))
@@ -319,6 +394,7 @@ class DeterministicProvider(CandidateProvider):
             4: ("Morning", "Noon", "Afternoon", "Evening"),
         }
         directions = self.english_directions if english else self.directions
+        plan_name = _deterministic_plan_name(context, english=english)
         candidates = [
             Candidate(
                 title=context.current_node.title if context.current_node else (
@@ -326,7 +402,16 @@ class DeterministicProvider(CandidateProvider):
                     if english and is_travel_plan
                     else f"第 {index // columns + 1} 天 · {zh_periods[columns][index % columns]}"
                     if is_travel_plan
-                    else f"{'Plan' if english else '方案'} {index // columns + 1} · {'Step' if english else '步骤'} {index % columns + 1}"
+                    else (
+                        _single_plan_title(f"1.{index % columns}", plan_name, directions[index % len(directions)])
+                        if rows == 1
+                        else _multi_plan_title(
+                            index // columns + 1,
+                            directions[(index // columns) % len(directions)],
+                            index % columns + 1,
+                            english=english,
+                        )
+                    )
                 ),
                 content=(
                     f"{current_content}\n\n{'Optimization brief' if english else '优化说明'}: {context.goal}"
@@ -343,11 +428,11 @@ class DeterministicProvider(CandidateProvider):
                         )
                         if is_travel_plan else
                         f"Based on “{context.goal}” and {source_titles}, this is plan {index // columns + 1}, step {index % columns + 1}.\n\n"
-                        f"Current node context: {focus_content}\n\n"
+                        f"Required context: {context_details}\n\n"
                         f"Each row is an independent plan; columns are that plan's sequential steps, so this node belongs to plan {index // columns + 1}.\n"
                         f"Continue from: {'the start of this plan' if index % columns == 0 else 'the previous step within this plan'}; {'this concludes the plan' if (index % columns) + 1 == columns else 'prepare the next step within this plan'}. Plans are independent of one another."
                         if english else f"围绕“{context.goal}”，基于 {source_titles} 形成方案 {index // columns + 1} 的步骤 {index % columns + 1}。\n\n"
-                        f"当前节点原文：{focus_content}\n\n"
+                        f"必须遵循的上下文：{context_details}\n\n"
                         f"每行是一个独立方案，列是方案内步骤：本节点属于方案 {index // columns + 1}。\n"
                         f"衔接：{'本方案第一步，从当前上下文开始' if index % columns == 0 else '承接本方案上一步骤'}；{'本方案已收尾' if (index % columns) + 1 == columns else '为方案内下一步骤做准备'}。方案之间彼此独立、互不承接。"
                     )
@@ -365,6 +450,37 @@ class DeterministicProvider(CandidateProvider):
             total_tokens=prompt_tokens + completion_tokens,
             estimated=True,
         ))
+
+
+def _deterministic_plan_name(context: ContextSnapshot, *, english: bool) -> str:
+    """Give local 1×n results a readable strategy name instead of an ordinal."""
+    reference = context.goal.strip() or (context.focus_node.title if context.focus_node else "当前主题")
+    reference = re.sub(r"^(请|帮我|为|针对|围绕)\s*", "", reference)
+    if re.match(r"^(生成|制定|规划|输出|提供|设计|写出|创建)\s*", reference):
+        reference = re.sub(r"^(生成|制定|规划|输出|提供|设计|写出|创建)\s*", "", reference)
+    else:
+        reference = re.sub(r"(生成|制定|规划|输出|提供|设计|写出|创建).*$", "", reference)
+    reference = reference.strip(" ：:，,。.")
+    if not reference:
+        reference = context.focus_node.title if context.focus_node else ("Current Topic" if english else "当前主题")
+    # Chinese thought-step labels take up to four characters and the separator
+    # takes three, leaving thirteen characters for the plan name.
+    reference = reference[:11].strip()
+    return f"{reference} Strategy" if english else f"{reference}方案"
+
+
+def _single_plan_title(number: str, plan_name: str, thought_step: str) -> str:
+    """Keep generated 1×n titles scannable without dropping their step."""
+    separator = " · "
+    prefix = f"{number} "
+    available = max(1, 20 - len(prefix) - len(separator) - len(thought_step))
+    return f"{prefix}{plan_name[:available]}{separator}{thought_step}"
+
+
+def _multi_plan_title(plan_number: int, plan_direction: str, step_number: int, *, english: bool) -> str:
+    prefix = f"{plan_number}.{step_number - 1}"
+    step_label = f"Step {step_number}" if english else f"步骤 {step_number}"
+    return f"{prefix}{plan_direction} · {step_label}"
 
 
 def _usage_from_response(body: object, fallback_text: str) -> TokenUsage:

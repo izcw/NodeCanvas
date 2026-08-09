@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from Agent.nodecanvas_agent.models import AgentRunRequest
-from Agent.nodecanvas_agent.provider import DeterministicProvider
+from Agent.nodecanvas_agent.provider import DeterministicProvider, _load_model_json
 from Agent.nodecanvas_agent.workflow import AgentWorkflow
 
 
@@ -73,7 +73,80 @@ def test_workflow_uses_direct_context_and_grid_count() -> None:
         (1066.0, 288.0),
         (1474.0, 288.0),
     }
+    assert [operation.source_node_id for operation in result.operations] == [
+        "agent-1",
+        result.operations[0].node_id,
+        "agent-1",
+        result.operations[2].node_id,
+    ]
     assert {"resolve_context", "generate_candidates", "validate_candidates", "compile_operations"}.issubset(workflow.graph.get_graph().nodes)
+
+
+def test_single_row_titles_name_the_strategy_and_its_thought_steps() -> None:
+    result = AgentWorkflow(provider=DeterministicProvider()).run(make_request(rows=1, columns=4))
+
+    assert [candidate.title for candidate in result.candidates] == [
+        "1.0 新品方案 · 核心主张",
+        "1.1 新品方案 · 受众洞察",
+        "1.2 新品方案 · 场景表达",
+        "1.3 新品方案 · 渠道转化",
+    ]
+    assert all(candidate.title != f"方案 1 · 步骤 {index}" for index, candidate in enumerate(result.candidates, start=1))
+    assert all(len(candidate.title) <= 20 for candidate in result.candidates)
+
+
+def test_multi_plan_titles_use_hierarchical_numbers_not_plan_one() -> None:
+    result = AgentWorkflow(provider=DeterministicProvider()).run(make_request(rows=2, columns=1))
+
+    assert [candidate.title for candidate in result.candidates] == ["1.0核心主张 · 步骤 1", "2.0受众洞察 · 步骤 1"]
+    assert all("方案" not in candidate.title for candidate in result.candidates)
+
+
+def test_new_plan_titles_describe_the_request_not_the_context_node() -> None:
+    payload = make_request(rows=1, columns=2).model_dump(mode="json")
+    payload["prompt"] = "输出 PRD 与原型"
+    payload["graph"]["nodes"][2]["data"]["title"] = "3.3 MVP人机协同实现与验证"
+
+    result = AgentWorkflow(provider=DeterministicProvider()).run(AgentRunRequest.model_validate(payload))
+
+    assert [candidate.title for candidate in result.candidates] == [
+        "1.0 PRD 与原型方案 · 核心主张",
+        "1.1 PRD 与原型方案 · 受众洞察",
+    ]
+    assert all("3.3" not in candidate.title for candidate in result.candidates)
+
+
+def test_provider_repairs_common_model_json_string_errors() -> None:
+    parsed = _load_model_json('''```json
+{"candidates":[{"title":"1.0 测试","content":"第一行
+他说"你好"","tags":[],"reason":"测试"}],}
+```''')
+
+    assert parsed["candidates"][0]["content"] == '第一行\n他说"你好"'
+
+
+def test_all_grid_shapes_keep_the_selected_context() -> None:
+    payload = make_request(rows=4, columns=1).model_dump(mode="json")
+    payload["graph"]["nodes"].append({
+        "id": "audience-1",
+        "type": "text",
+        "position": {"x": 0, "y": 160},
+        "data": {"title": "目标人群", "content": "在校大学生，关注宿舍与图书馆场景"},
+    })
+    payload["graph"]["edges"].append({
+        "id": "audience-agent",
+        "source": "audience-1",
+        "sourceHandle": "right-source",
+        "target": "agent-1",
+        "targetHandle": "left-target",
+    })
+
+    for rows, columns in ((1, 4), (4, 1), (2, 2)):
+        payload["grid"] = {"rows": rows, "columns": columns}
+        result = AgentWorkflow(provider=DeterministicProvider()).run(AgentRunRequest.model_validate(payload))
+
+        assert len(result.candidates) == rows * columns
+        assert all("在校大学生，关注宿舍与图书馆场景" in candidate.content for candidate in result.candidates)
 
 
 def test_context_includes_current_node_and_every_left_linked_node() -> None:
@@ -220,5 +293,6 @@ def test_response_language_defaults_to_chinese_and_supports_english() -> None:
     payload = make_request(rows=1, columns=1).model_dump(mode="json")
     payload["response_language"] = "en-US"
     english = AgentWorkflow(provider=DeterministicProvider()).run(AgentRunRequest.model_validate(payload))
-    assert english.candidates[0].title == "Plan 1 · Step 1"
+    assert english.candidates[0].title.endswith(" · Core Message")
+    assert len(english.candidates[0].title) <= 20
     assert "independent plan" in english.candidates[0].content

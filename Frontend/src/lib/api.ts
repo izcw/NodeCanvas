@@ -1,14 +1,13 @@
 import type { AgentRunOptions, CanvasEdge, CanvasNode, KnowledgeItem, ModelConfig, ResponseLanguage } from '../types/canvas'
 
 const API_BASE_URL = (import.meta.env.VITE_API_URL || 'http://127.0.0.1:8000').replace(/\/$/, '')
-export const DEFAULT_PROJECT_ID = 'default'
 export const ACTIVE_PROJECT_STORAGE_KEY = 'nodecanvas:active-project-id:v1'
 
 export function currentProjectId() {
   const url = new URL(window.location.href)
   const projectFromUrl = url.pathname.match(/^\/canvas\/([^/]+)$/)?.[1]
   if (projectFromUrl) return projectFromUrl
-  return localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY) || DEFAULT_PROJECT_ID
+  return localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY) || ''
 }
 
 export type ProjectGraph = {

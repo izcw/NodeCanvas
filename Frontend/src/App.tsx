@@ -6,7 +6,7 @@ import { LeftSidebar } from './components/layout/LeftSidebar'
 import { RightAssistant } from './components/layout/RightAssistant'
 import { getNodeGroups } from './features/canvas/graph'
 import type { AgentRunOptions, CanvasEdge, CanvasNode, CanvasNodeData, KnowledgeItem, ModelConfig } from './types/canvas'
-import { cancelAgentRun, createShareLink, deleteKnowledgeDocument, executeAgent, executeAgentChat, executeNodeChat, loadKnowledgeDocuments, loadProjectGraph, loadSharedGraph, retryKnowledgeDocument, saveProjectGraph, uploadKnowledgeDocument } from './lib/api'
+import { cancelAgentRun, createShareLink, currentProjectId, deleteKnowledgeDocument, executeAgent, executeAgentChat, executeNodeChat, loadKnowledgeDocuments, loadProjectGraph, loadSharedGraph, retryKnowledgeDocument, saveProjectGraph, uploadKnowledgeDocument } from './lib/api'
 import { ModelRegistryProvider, useModelRegistry } from './features/models/ModelRegistryContext'
 import { ModelManagerDialog } from './features/models/ModelManagerDialog'
 import { DocumentTitle, ProjectWorkspaceHome, ProjectWorkspaceProvider } from './features/workspace/ProjectWorkspace'
@@ -136,6 +136,7 @@ function Workspace() {
   const [pendingAgentModification, setPendingAgentModification] = useState<PendingAgentModification | null>(null)
   const shareId = useMemo(() => new URLSearchParams(window.location.search).get('share'), [])
   const [readOnlyShare, setReadOnlyShare] = useState(Boolean(shareId))
+  const projectId = currentProjectId()
   const graphRevisionRef = useRef(0)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const knowledgeInputRef = useRef<HTMLInputElement>(null)
@@ -165,6 +166,10 @@ function Workspace() {
         .finally(() => { if (active) setGraphReady(true) })
       return () => { active = false }
     }
+    if (!projectId) {
+      setGraphReady(true)
+      return () => { active = false }
+    }
     void loadProjectGraph()
       .then(async (graph) => {
         if (!active) return
@@ -187,17 +192,17 @@ function Workspace() {
       .then((items) => { if (active) setKnowledge(items) })
       .catch((error) => console.warn('Failed to load knowledge documents.', error))
     return () => { active = false }
-  }, [setEdges, setNodes, shareId])
+  }, [projectId, setEdges, setNodes, shareId])
 
   useEffect(() => {
-    if (!graphReady || readOnlyShare || agentRunning || nodes.some((node) => node.data.generationStatus)) return
+    if (!projectId || !graphReady || readOnlyShare || agentRunning || nodes.some((node) => node.data.generationStatus)) return
     const timeout = window.setTimeout(() => {
       void saveProjectGraph(nodes, edges, graphRevisionRef.current)
         .then((graph) => { graphRevisionRef.current = graph.revision })
         .catch((error) => console.warn('Failed to persist canvas graph.', error))
     }, 650)
     return () => window.clearTimeout(timeout)
-  }, [agentRunning, edges, graphReady, nodes, readOnlyShare])
+  }, [agentRunning, edges, graphReady, nodes, projectId, readOnlyShare])
 
   useLayoutEffect(() => {
     if (isDraggingRef.current) return
@@ -414,6 +419,7 @@ function Workspace() {
       const count = effectiveOptions.grid.rows * effectiveOptions.grid.columns
       for (let index = 0; index < count; index += 1) {
         const id = `pending-agent-${optimisticRunId}-${index}`
+        const previousInPlanId = index % effectiveOptions.grid.columns === 0 ? sourceId : optimisticNodes[index - 1].id
         const nodeType = effectiveOptions.generationType === '图片' ? 'image' : 'text'
         optimisticNodes.push({
           id,
@@ -433,7 +439,7 @@ function Workspace() {
         })
         optimisticEdges.push({
           id: `pending-edge-${optimisticRunId}-${index}`,
-          source: sourceId,
+          source: previousInPlanId,
           sourceHandle: 'right-source',
           target: id,
           targetHandle: 'left-target',
@@ -603,8 +609,8 @@ function Workspace() {
     <input ref={knowledgeInputRef} className="visually-hidden" type="file" onChange={onKnowledgeSelected} />
     {!readOnlyShare && <LeftSidebar collapsed={leftCollapsed} tab={sidebarTab} groups={groups} nodes={nodes} knowledge={knowledge} onTabChange={setSidebarTab} onToggle={() => setLeftCollapsed((value) => !value)} onFocusGroup={focusGroup} onRenameNode={(id, title) => setNodes((current) => current.map((node) => node.id === id ? { ...node, data: { ...node.data, title } } : node))} onUploadKnowledge={chooseKnowledge} onSelectKnowledge={setActiveKnowledge} onAttachKnowledge={attachKnowledgeToCanvas} onDeleteKnowledge={removeKnowledge} onRetryKnowledge={retryKnowledge} onNewCanvas={() => { setNodes([]); setEdges([]); setActiveKnowledge(null); setSidebarTab('canvas') }} />}
     {!readOnlyShare && !leftCollapsed && <button className="sidebar-resizer sidebar-resizer--left" style={{ left: leftWidth - 4 }} aria-label="调整左侧栏宽度" onPointerDown={(event) => resizeSidebar('left', event)} />}
-    <CanvasStage nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} setEdges={setEdges} onAddText={(position, onCreated) => addText('', position, onCreated)} onAddImage={addImage} onAddFile={chooseFile} onAddComment={addComment} onChatAnswer={editCurrentNode} onAgentRun={runAgentNode} canUndo={historyState.canUndo} canRedo={historyState.canRedo} onUndo={undo} onRedo={redo} onNodeDragStart={onNodeDragStart} onNodeDragStop={onNodeDragStop} knowledgePreview={activeKnowledge} onCloseKnowledgePreview={() => setActiveKnowledge(null)} leftCollapsed={leftCollapsed} agentCollapsed={agentCollapsed} onToggleLeft={() => setLeftCollapsed((value) => !value)} onToggleAgent={() => setAgentCollapsed((value) => !value)} readOnly={readOnlyShare} onCreateShareLink={shareCurrentCanvas} modificationTargetIds={pendingAgentModification?.selectedTargetIds} onToggleModificationTarget={toggleModificationTarget} />
-    {!readOnlyShare && <RightAssistant collapsed={agentCollapsed} nodes={nodes} onToggle={() => setAgentCollapsed((value) => !value)} onAgentRun={(sourceId, prompt, model, options, signal, decision) => runAgentNode(sourceId, prompt, model, options, signal, decision)} onPlanDelete={planAgentDeletion} onDeleteNodes={deleteAgentNodes} onAsk={askAgent} />}
+    {(readOnlyShare || projectId) && <CanvasStage key={projectId || 'shared'} projectId={projectId} nodes={nodes} edges={edges} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} setEdges={setEdges} onAddText={(position, onCreated) => addText('', position, onCreated)} onAddImage={addImage} onAddFile={chooseFile} onAddComment={addComment} onChatAnswer={editCurrentNode} onAgentRun={runAgentNode} canUndo={historyState.canUndo} canRedo={historyState.canRedo} onUndo={undo} onRedo={redo} onNodeDragStart={onNodeDragStart} onNodeDragStop={onNodeDragStop} knowledgePreview={activeKnowledge} onCloseKnowledgePreview={() => setActiveKnowledge(null)} leftCollapsed={leftCollapsed} agentCollapsed={agentCollapsed} onToggleLeft={() => setLeftCollapsed((value) => !value)} onToggleAgent={() => setAgentCollapsed((value) => !value)} readOnly={readOnlyShare} onCreateShareLink={shareCurrentCanvas} modificationTargetIds={pendingAgentModification?.selectedTargetIds} onToggleModificationTarget={toggleModificationTarget} />}
+    {!readOnlyShare && projectId && <RightAssistant collapsed={agentCollapsed} nodes={nodes} onToggle={() => setAgentCollapsed((value) => !value)} onAgentRun={(sourceId, prompt, model, options, signal, decision) => runAgentNode(sourceId, prompt, model, options, signal, decision)} onPlanDelete={planAgentDeletion} onDeleteNodes={deleteAgentNodes} onAsk={askAgent} />}
     {!readOnlyShare && !agentCollapsed && <button className="sidebar-resizer sidebar-resizer--right" style={{ right: rightWidth - 4 }} aria-label="调整右侧栏宽度" onPointerDown={(event) => resizeSidebar('right', event)} />}
     {pendingAgentModification && confirmationAnchor && <section className="agent-modification-popover" role="dialog" aria-label="确认 Agent 执行方式" style={{ left: confirmationAnchor.right, top: confirmationAnchor.top - 10 }}><span>将修改</span><div className="agent-modification-targets">{pendingAgentModification.targets.map((target) => <button key={target.id} className={pendingAgentModification.selectedTargetIds.includes(target.id) ? 'selected' : ''} onClick={() => toggleModificationTarget(target.id)}>@{target.title}</button>)}</div><small>点击节点名称可增加或取消修改；画布中的紫色高亮表示会被修改。</small><footer><button onClick={() => { setNodes((current) => current.map((node) => setModificationTargetClass(node, false))); setPendingAgentModification(null) }}>取消</button>{pendingAgentModification.selectedTargetIds.length === 0 ? <button className="agent-modification-create" onClick={() => { const pending = pendingAgentModification; setNodes((current) => current.map((node) => setModificationTargetClass(node, false))); setPendingAgentModification(null); runAgentNode(pending.sourceId, pending.prompt, pending.model, pending.options, undefined, 'create') }}>新生成</button> : <button className="agent-modification-confirm" onClick={() => { const pending = pendingAgentModification; const selectedIds = pending.selectedTargetIds; setNodes((current) => current.map((node) => setModificationTargetClass(node, false))); setPendingAgentModification(null); runAgentNode(pending.sourceId, pending.prompt, pending.model, { ...pending.options, targetNodeIds: selectedIds }, undefined, 'modify') }}>确认修改</button>}</footer></section>}
   </main></ProjectWorkspaceProvider>

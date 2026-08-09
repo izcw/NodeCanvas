@@ -71,7 +71,6 @@ def index_knowledge_document(project_id: str, document_id: str) -> str:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     repository.initialize()
-    repository.ensure_project("default", "默认画布")
     vector_index.initialize()
     if vector_index.enabled:
         for project_id, document_id, _chunks in repository.all_knowledge_chunks():

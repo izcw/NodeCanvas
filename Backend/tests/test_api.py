@@ -58,6 +58,12 @@ def test_agent_endpoint_persists_run_and_graph(tmp_path: Path) -> None:
         assert body["run"]["provider"] == "deterministic-local"
         assert len(body["run"]["candidates"]) == 2
         assert len(body["graph"]["nodes"]) == 4
+        generated_ids = [operation["node_id"] for operation in body["run"]["operations"]]
+        generated_edges = [edge for edge in body["graph"]["edges"] if edge["target"] in generated_ids]
+        assert [(edge["source"], edge["target"]) for edge in generated_edges] == [
+            ("agent-1", generated_ids[0]),
+            (generated_ids[0], generated_ids[1]),
+        ]
         history = client.get("/api/projects/test/agent/runs").json()["items"]
         assert len(history) == 1
         assert history[0]["prompt"] == "生成两个传播方向"
@@ -318,7 +324,7 @@ def test_project_directory_lists_existing_and_new_projects(tmp_path: Path) -> No
 
         projects = client.get("/api/projects")
         assert projects.status_code == 200
-        assert {item["id"] for item in projects.json()} >= {"default", "launch"}
+        assert {item["id"] for item in projects.json()} == {"launch"}
 
         renamed = client.patch("/api/projects/launch", json={"title": "发布策划 V2"})
         assert renamed.status_code == 200
