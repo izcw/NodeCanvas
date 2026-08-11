@@ -58,12 +58,13 @@ class ContextGraphResolver:
             else None
         )
         knowledge_items = knowledge or []
-        serialized = request.prompt + "\n" + (focus_node.content if focus_node else "") + "\n" + "\n".join(
+        serialized = (request.project_title or "") + "\n" + request.prompt + "\n" + (focus_node.content if focus_node else "") + "\n" + "\n".join(
             f"{item.title}: {item.content}" for item in items
         ) + "\n" + "\n".join(knowledge_items)
         return ContextSnapshot(
             source_node_id=request.source_node_id,
             goal=request.prompt,
+            project_title=request.project_title,
             direct_inputs=items,
             focus_node=focus_node,
             current_node=(

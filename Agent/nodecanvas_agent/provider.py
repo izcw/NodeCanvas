@@ -26,7 +26,8 @@ def _context_user_text(context: ContextSnapshot) -> str:
         else ""
     )
     knowledge_text = "\n".join(context.knowledge)
-    return f"目标：{context.goal}{focus_node_text}{current_node_text}\n\n左侧直接输入（辅助上下文）：\n{context_text}\n\n知识：\n{knowledge_text}"
+    project_text = f"项目主题（来自项目标题）：{context.project_title}\n\n" if context.project_title else ""
+    return f"{project_text}目标：{context.goal}{focus_node_text}{current_node_text}\n\n左侧直接输入（辅助上下文）：\n{context_text}\n\n知识：\n{knowledge_text}"
 
 
 class CandidateProvider(ABC):
@@ -376,10 +377,12 @@ class DeterministicProvider(CandidateProvider):
         english = context.response_language == "en-US"
         focus_title = context.focus_node.title if context.focus_node else "当前节点"
         focus_content = context.focus_node.content if context.focus_node else ""
-        source_titles = "、".join([focus_title, *(item.title for item in context.direct_inputs)])
-        context_details = "；".join(item.content for item in context.direct_inputs if item.content.strip()) or focus_content
+        source_title_parts = ([context.project_title] if context.project_title else []) + [focus_title, *(item.title for item in context.direct_inputs)]
+        context_parts = ([f"项目主题：{context.project_title}"] if context.project_title else []) + [item.content for item in context.direct_inputs if item.content.strip()]
+        source_titles = "、".join(source_title_parts)
+        context_details = "；".join(context_parts) or focus_content
         current_content = context.current_node.content if context.current_node else ""
-        travel_text = "\n".join([context.goal, focus_title, focus_content, *(item.title + "\n" + item.content for item in context.direct_inputs)])
+        travel_text = "\n".join([context.project_title or "", context.goal, focus_title, focus_content, *(item.title + "\n" + item.content for item in context.direct_inputs)])
         is_travel_plan = bool(re.search(r"旅行|旅游|行程|景点|酒店|住宿|出发|目的地|预算|travel|trip|itinerary", travel_text, re.I))
         zh_periods = {
             1: ("全天",),
@@ -442,7 +445,7 @@ class DeterministicProvider(CandidateProvider):
             )
             for index in range(count)
         ]
-        prompt_tokens = _estimate_tokens("\n".join([context.goal, focus_content, *(item.content for item in context.direct_inputs), *(context.knowledge or [])]))
+        prompt_tokens = _estimate_tokens("\n".join([context.project_title or "", context.goal, focus_content, *(item.content for item in context.direct_inputs), *(context.knowledge or [])]))
         completion_tokens = sum(_estimate_tokens(candidate.content) for candidate in candidates)
         return ProviderGeneration(candidates=candidates, usage=TokenUsage(
             prompt_tokens=prompt_tokens,

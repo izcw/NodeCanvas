@@ -1,13 +1,13 @@
 import { addEdge, Background, BackgroundVariant, BaseEdge, ConnectionMode, getBezierPath, Handle, MiniMap, NodeToolbar, Panel, Position, ReactFlow as BaseReactFlow, SelectionMode, useReactFlow } from '@xyflow/react'
 import type { Connection, EdgeProps, OnConnectEnd, OnConnectStart, OnEdgesChange, OnMove, OnNodesChange, ReactFlowProps, XYPosition } from '@xyflow/react'
 import { AlignHorizontalSpaceAround, AlignVerticalSpaceAround, BoxSelect, ChevronDown, Copy, Eye, FolderPlus, Grid2X2, Grid3X3, History, Link2, LocateFixed, Map, MessageSquareText, Minimize2, Plus, Redo2, Search, Share2, Trash2, Undo2, Workflow, X } from 'lucide-react'
-import { MouseEvent as ReactMouseEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentRunOptions, CanvasEdge, CanvasNode, ModelConfig } from '../../types/canvas'
 import type { KnowledgeItem } from '../../types/canvas'
 import { AddNodeMenu } from './AddNodeMenu'
 import { BrandLogo } from '../BrandLogo'
 import { NodeChatComposer } from './NodeChatComposer'
-import { CanvasNodeReadOnlyContext, nodeTypes } from './nodes'
+import { CanvasNodeMovementContext, CanvasNodeReadOnlyContext, nodeTypes } from './nodes'
 import { KnowledgePreview } from './KnowledgePreview'
 import { FloatingButtonGroup } from '../ui/FloatingButtonGroup'
 import { Bot } from 'lucide-react'
@@ -101,9 +101,12 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   const stageRef = useRef<HTMLElement>(null)
   const [selectionDragPosition, setSelectionDragPosition] = useState<XYPosition | null>(null)
   const [boxSelectionActive, setBoxSelectionActive] = useState(false)
+  const [selectionMoving, setSelectionMoving] = useState(false)
   const [canvasPanning, setCanvasPanning] = useState(false)
   const [selectionGenerateMenu, setSelectionGenerateMenu] = useState<Omit<MenuState, 'mode'> | null>(null)
   const [pendingConnection, setPendingConnection] = useState<{ source: string; sourceHandle: string; canvasPosition: XYPosition } | null>(null)
+  const [pointerConnectionActive, setPointerConnectionActive] = useState(false)
+  const [pointerConnectionTargetId, setPointerConnectionTargetId] = useState<string | null>(null)
   const viewportSaveTimerRef = useRef<number | null>(null)
   const viewportRestoredRef = useRef(false)
   const storedViewportRef = useRef<StoredViewport | null>(readOnly ? null : readStoredViewport(projectId))
@@ -122,6 +125,18 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   const { deleteElements, zoomTo, screenToFlowPosition, fitView, setCenter, setNodes, setViewport, getViewport } = useReactFlow<CanvasNode, CanvasEdge>()
   const interactionLocked = presentationMode || readOnly || modificationTargetIds !== undefined
   const nodeInteractionsLocked = interactionLocked || canvasPanning
+  const nodeMovementContext = useMemo(() => ({
+    enabled: !nodeInteractionsLocked,
+    snapToGrid,
+    onDragStart: () => {
+      suppressNodeClickRef.current = true
+      onNodeDragStart()
+    },
+    onDragStop: () => {
+      onNodeDragStop()
+      window.setTimeout(() => { suppressNodeClickRef.current = false }, 0)
+    },
+  }), [nodeInteractionsLocked, onNodeDragStart, onNodeDragStop, snapToGrid])
   const activeNode = nodes.find((node) => node.id === activeNodeId)
   const activeNodeExecutionLocked = activeNode?.data.agentStatus === 'running' || Boolean(activeNode?.data.generationStatus)
   const selectedNodes = useMemo(() => nodes.filter((node) => node.selected), [nodes])
@@ -154,8 +169,11 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   const flowNodes = useMemo(() => {
     const previewPosition = selectionPreviewPosition ?? pendingConnection?.canvasPosition
     const extras = [selectionConnector, previewPosition ? { id: temporaryNodeId, type: 'connectionPreview', position: previewPosition, data: { title: '' }, width: 2, height: 2, measured: { width: 2, height: 2 }, selectable: false, draggable: false, deletable: false, style: { width: 2, height: 2, opacity: 0, pointerEvents: 'none' } } as unknown as CanvasNode : null].filter(Boolean) as CanvasNode[]
-    return [...nodes, ...extras]
-  }, [nodes, pendingConnection, selectionConnector, selectionPreviewPosition])
+    const renderedNodes = pointerConnectionTargetId
+      ? nodes.map((node) => node.id === pointerConnectionTargetId ? { ...node, className: `${node.className ?? ''} is-magnetic-target`.trim() } : node)
+      : nodes
+    return [...renderedNodes, ...extras]
+  }, [nodes, pendingConnection, pointerConnectionTargetId, selectionConnector, selectionPreviewPosition])
   const flowEdges = useMemo(() => {
     if (selectionPreviewPosition) {
       const previewEdges = selectedNodes
@@ -518,18 +536,110 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   }, [commentMode, connectableNodeIds, screenToFlowPosition, setEdges, setMenuAtPoint, setSelectionMenuAtPoint])
 
   useEffect(() => {
-    const openConnectionMenu = (event: Event) => {
-      const { sourceId, side, x, y } = (event as CustomEvent<{ sourceId: string; side: 'context' | 'reference'; x: number; y: number }>).detail
-      const stage = document.querySelector('.canvas-stage')
-      if (!(stage instanceof HTMLElement)) return
+    const startPointerConnection = (event: Event) => {
+      if (commentMode || nodeInteractionsLocked) return
+      const { sourceId, side, pointerId, x, y } = (event as CustomEvent<{ sourceId: string; side: 'context' | 'reference'; pointerId: number; x: number; y: number }>).detail
+      if (!connectableNodeIds.has(sourceId)) return
       const sourceHandle = side === 'context' ? 'left-context-source' : 'right-source'
-      const point = { x, y }
-      setPendingConnection({ source: sourceId, sourceHandle, canvasPosition: screenToFlowPosition(point) })
-      setMenuAtPoint(stage.getBoundingClientRect(), point, side)
+      const startPoint = { x, y }
+      let moved = false
+
+      const findMagneticTarget = (point: { x: number; y: number }) => {
+        const selector = side === 'context' ? '.node-anchor--right' : '.node-anchor--left'
+        let nearest: { id: string; point: { x: number; y: number }; distance: number } | null = null
+        for (const anchor of document.querySelectorAll<HTMLElement>(`.react-flow__node ${selector}`)) {
+          const node = anchor.closest<HTMLElement>('.react-flow__node')
+          const id = node?.dataset.id
+          if (!id || id === sourceId || !connectableNodeIds.has(id)) continue
+          const bounds = anchor.getBoundingClientRect()
+          const anchorPoint = { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
+          const distance = Math.hypot(point.x - anchorPoint.x, point.y - anchorPoint.y)
+          if (distance <= 72 && (!nearest || distance < nearest.distance)) nearest = { id, point: anchorPoint, distance }
+        }
+        return nearest
+      }
+
+      setMenu(null)
+      setPendingConnection({ source: sourceId, sourceHandle, canvasPosition: screenToFlowPosition(startPoint) })
+      setPointerConnectionActive(true)
+      setPointerConnectionTargetId(null)
+      suppressNodeClickRef.current = true
+
+      const followPointer = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId !== pointerId) return
+        pointerEvent.preventDefault()
+        if (Math.hypot(pointerEvent.clientX - x, pointerEvent.clientY - y) >= 4) moved = true
+        const magneticTarget = findMagneticTarget({ x: pointerEvent.clientX, y: pointerEvent.clientY })
+        setPointerConnectionTargetId((current) => current === magneticTarget?.id ? current : magneticTarget?.id ?? null)
+        const pointerPosition = magneticTarget?.point ?? { x: pointerEvent.clientX, y: pointerEvent.clientY }
+        setPendingConnection({
+          source: sourceId,
+          sourceHandle,
+          canvasPosition: screenToFlowPosition(pointerPosition),
+        })
+      }
+
+      const cleanup = () => {
+        window.removeEventListener('pointermove', followPointer, true)
+        window.removeEventListener('pointerup', finishPointer, true)
+        window.removeEventListener('pointercancel', cancelPointer, true)
+        setPointerConnectionActive(false)
+        setPointerConnectionTargetId(null)
+        window.setTimeout(() => { suppressNodeClickRef.current = false }, 0)
+      }
+
+      const cancelPointer = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId !== pointerId) return
+        cleanup()
+        setPendingConnection(null)
+      }
+
+      const finishPointer = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId !== pointerId) return
+        const point = { x: pointerEvent.clientX, y: pointerEvent.clientY }
+        const magneticTarget = findMagneticTarget(point)
+        cleanup()
+        const elementsAtPoint = document.elementsFromPoint(point.x, point.y)
+        const targetNode = elementsAtPoint
+          .map((element) => element.closest('.react-flow__node'))
+          .find((element): element is Element => Boolean(element && ![temporaryNodeId, selectionConnectorId].includes(element.getAttribute('data-id') ?? '')))
+        const targetId = magneticTarget?.id ?? targetNode?.getAttribute('data-id')
+
+        if (targetId === sourceId || (targetId && !connectableNodeIds.has(targetId))) {
+          setPendingConnection(null)
+          return
+        }
+
+        if (targetId) {
+          setPendingConnection(null)
+          setEdges((current) => {
+            const alreadyConnected = current.some((edge) => (edge.source === sourceId && edge.target === targetId) || (edge.source === targetId && edge.target === sourceId))
+            if (alreadyConnected) return current
+            const connection = side === 'context'
+              ? { source: targetId, sourceHandle: 'right-source', target: sourceId, targetHandle: 'left-target' }
+              : { source: sourceId, sourceHandle: 'right-source', target: targetId, targetHandle: 'left-target' }
+            return addEdge(createEdge(connection), current)
+          })
+          return
+        }
+
+        const stage = document.querySelector('.canvas-stage')
+        if (!(stage instanceof HTMLElement)) {
+          setPendingConnection(null)
+          return
+        }
+        const menuPoint = moved ? point : startPoint
+        setPendingConnection({ source: sourceId, sourceHandle, canvasPosition: screenToFlowPosition(menuPoint) })
+        setMenuAtPoint(stage.getBoundingClientRect(), menuPoint, side)
+      }
+
+      window.addEventListener('pointermove', followPointer, { capture: true, passive: false })
+      window.addEventListener('pointerup', finishPointer, true)
+      window.addEventListener('pointercancel', cancelPointer, true)
     }
-    window.addEventListener('nodecanvas:open-connection-menu', openConnectionMenu)
-    return () => window.removeEventListener('nodecanvas:open-connection-menu', openConnectionMenu)
-  }, [screenToFlowPosition, setMenuAtPoint])
+    window.addEventListener('nodecanvas:start-pointer-connection', startPointerConnection)
+    return () => window.removeEventListener('nodecanvas:start-pointer-connection', startPointerConnection)
+  }, [commentMode, connectableNodeIds, nodeInteractionsLocked, screenToFlowPosition, setEdges, setMenuAtPoint])
 
   useEffect(() => {
     const openSelectionMenu = (event: Event) => {
@@ -581,6 +691,69 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
       setCanvasPanning(false)
       window.setTimeout(() => { suppressNodeClickRef.current = false }, 0)
     }
+  }
+
+  const onStagePointerDownCapture = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || nodeInteractionsLocked) return
+    const target = event.target
+    if (!(target instanceof Element) || !target.closest('.react-flow__nodesselection-rect')) return
+    const selectedAtStart = nodes.filter((node) => node.selected && node.draggable !== false)
+    if (!selectedAtStart.length) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    const pointerId = event.pointerId
+    const startPoint = { x: event.clientX, y: event.clientY }
+    const positionsAtStart = new globalThis.Map(selectedAtStart.map((node) => [node.id, { ...node.position }]))
+    const snapAnchor = selectedAtStart[0].position
+    const previousUserSelect = document.body.style.userSelect
+    let moving = false
+
+    const moveSelection = (pointerEvent: PointerEvent) => {
+      if (pointerEvent.pointerId !== pointerId) return
+      const screenX = pointerEvent.clientX - startPoint.x
+      const screenY = pointerEvent.clientY - startPoint.y
+      if (!moving && Math.hypot(screenX, screenY) < 4) return
+
+      if (!moving) {
+        moving = true
+        setSelectionMoving(true)
+        suppressNodeClickRef.current = true
+        document.body.style.userSelect = 'none'
+        window.getSelection()?.removeAllRanges()
+        onNodeDragStart()
+      }
+
+      pointerEvent.preventDefault()
+      const viewportZoom = Math.max(.01, getViewport().zoom)
+      let deltaX = screenX / viewportZoom
+      let deltaY = screenY / viewportZoom
+      if (snapToGrid) {
+        deltaX = Math.round((snapAnchor.x + deltaX) / 20) * 20 - snapAnchor.x
+        deltaY = Math.round((snapAnchor.y + deltaY) / 20) * 20 - snapAnchor.y
+      }
+      setNodes((current) => current.map((node) => {
+        const position = positionsAtStart.get(node.id)
+        return position ? { ...node, position: { x: position.x + deltaX, y: position.y + deltaY } } : node
+      }))
+    }
+
+    const finishSelectionMove = (pointerEvent: PointerEvent) => {
+      if (pointerEvent.pointerId !== pointerId) return
+      window.removeEventListener('pointermove', moveSelection, true)
+      window.removeEventListener('pointerup', finishSelectionMove, true)
+      window.removeEventListener('pointercancel', finishSelectionMove, true)
+      document.body.style.userSelect = previousUserSelect
+      setSelectionMoving(false)
+      if (moving) {
+        onNodeDragStop()
+        window.setTimeout(() => { suppressNodeClickRef.current = false }, 0)
+      }
+    }
+
+    window.addEventListener('pointermove', moveSelection, { capture: true, passive: false })
+    window.addEventListener('pointerup', finishSelectionMove, true)
+    window.addEventListener('pointercancel', finishSelectionMove, true)
   }
 
   useEffect(() => {
@@ -703,7 +876,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     setSelectionGenerateMenu(null)
   }
 
-  return <section ref={stageRef} className={`canvas-stage ${commentMode ? 'comment-mode' : ''} ${presentationMode ? 'presentation-mode' : ''} ${readOnly ? 'read-only-share' : ''} ${knowledgePreview ? 'has-knowledge-preview' : ''} ${(boxSelectionActive || selectedNodes.length > 1) && selectedNodes.length ? 'has-box-selection' : ''} ${selectionDragPosition ? 'selection-connecting' : ''} ${canvasPanning ? 'is-canvas-panning' : ''}`} onMouseDownCapture={onStageMouseDownCapture} onMouseMoveCapture={onStageMouseMoveCapture} onMouseUpCapture={onStageMouseUpCapture} onDoubleClickCapture={openMenuAtCursor} onContextMenuCapture={(event) => {
+  return <section ref={stageRef} className={`canvas-stage ${commentMode ? 'comment-mode' : ''} ${presentationMode ? 'presentation-mode' : ''} ${readOnly ? 'read-only-share' : ''} ${knowledgePreview ? 'has-knowledge-preview' : ''} ${(boxSelectionActive || selectedNodes.length > 1) && selectedNodes.length ? 'has-box-selection' : ''} ${selectionDragPosition ? 'selection-connecting' : ''} ${selectionMoving ? 'is-selection-moving' : ''} ${pointerConnectionActive ? 'is-pointer-connecting' : ''} ${canvasPanning ? 'is-canvas-panning' : ''}`} onPointerDownCapture={onStagePointerDownCapture} onMouseDownCapture={onStageMouseDownCapture} onMouseMoveCapture={onStageMouseMoveCapture} onMouseUpCapture={onStageMouseUpCapture} onDoubleClickCapture={openMenuAtCursor} onContextMenuCapture={(event) => {
     // Shared links are read-only, but their nodes can still expose the
     // viewing menu (focus, preview, and copy). Presentation mode and agent
     // target selection remain fully locked.
@@ -718,7 +891,8 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     event.preventDefault()
   }}>
     <CanvasNodeReadOnlyContext.Provider value={readOnly}>
-    <ReactFlow nodes={flowNodes} edges={flowEdges} nodeTypes={canvasNodeTypes} edgeTypes={edgeTypes} connectionMode={ConnectionMode.Loose} defaultViewport={storedViewportRef.current ?? { x: 0, y: 0, zoom: 1 }} noPanClassName="canvas-pan-never-block" onInit={restoreStoredViewport} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onSelectionStart={onSelectionStart} onSelectionEnd={onSelectionEnd} onNodeClick={(_, node) => { setBoxSelectionActive(false); if (suppressNodeClickRef.current) { suppressNodeClickRef.current = false; return } if (modificationTargetIds) { onToggleModificationTarget?.(node.id); return } if (!nodeInteractionsLocked) setFocusedNodeId(node.id) }} onNodeDragStart={onNodeDragStart} onNodeDragStop={onNodeDragStop} onConnect={onConnect} onConnectStart={onConnectStart} onConnectEnd={onConnectEnd} isValidConnection={isValidConnection} onEdgeClick={(_, edge) => { if (!nodeInteractionsLocked) setEdges((current) => current.map((item) => ({ ...item, selected: item.id === edge.id }))) }} onEdgeDoubleClick={(_, edge) => { if (nodeInteractionsLocked) return; setEdges((current) => current.map((item) => { if (item.id !== edge.id) return item; const adopted = !item.data?.selected; const original = item.data?.originalStyle ?? item.style ?? { stroke: '#73869a', strokeWidth: 2.5 }; return { ...item, data: { ...item.data, selected: adopted, originalStyle: original }, style: adopted ? { stroke: '#b8d36b', strokeWidth: 2.6, strokeDasharray: '7 4' } : original } })) }} onNodeDoubleClick={(_, node) => { if (!activeNodeExecutionLocked && !nodeInteractionsLocked && !commentMode) { closeMenu(); setActiveNodeId(node.id) } }} onPaneClick={(event) => { if (activeNodeExecutionLocked || nodeInteractionsLocked) return; setBoxSelectionActive(false); if (commentMode) onAddComment(screenToFlowPosition({ x: event.clientX, y: event.clientY })); else { setActiveNodeId(null); setFocusedNodeId(null); setEdges((current) => current.map((item) => ({ ...item, selected: false }))) } }} onMoveStart={onMoveStart} onMove={onMove} onMoveEnd={onMoveEnd} zoomOnDoubleClick={false} zoomOnScroll={false} panOnScroll panOnScrollSpeed={1.5} zoomOnPinch minZoom={0.2} maxZoom={2} connectionRadius={110} snapToGrid={snapToGrid} snapGrid={[20, 20]} nodesConnectable={!commentMode && !nodeInteractionsLocked} nodesDraggable={!nodeInteractionsLocked} elementsSelectable={!nodeInteractionsLocked} panOnDrag={[2]} selectionOnDrag={!nodeInteractionsLocked} selectionMode={SelectionMode.Partial} defaultEdgeOptions={{ style: { stroke: '#73869a', strokeWidth: 2.5 } }} deleteKeyCode={nodeInteractionsLocked || activeNodeExecutionLocked ? null : ['Backspace', 'Delete']} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" proOptions={{ hideAttribution: true }} aria-label="节点式创意策划画布">
+    <CanvasNodeMovementContext.Provider value={nodeMovementContext}>
+    <ReactFlow nodes={flowNodes} edges={flowEdges} nodeTypes={canvasNodeTypes} edgeTypes={edgeTypes} connectionMode={ConnectionMode.Loose} defaultViewport={storedViewportRef.current ?? { x: 0, y: 0, zoom: 1 }} noPanClassName="canvas-pan-never-block" onInit={restoreStoredViewport} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onSelectionStart={onSelectionStart} onSelectionEnd={onSelectionEnd} onNodeClick={(_, node) => { setBoxSelectionActive(false); if (suppressNodeClickRef.current) { suppressNodeClickRef.current = false; return } if (modificationTargetIds) { onToggleModificationTarget?.(node.id); return } if (!nodeInteractionsLocked) setFocusedNodeId(node.id) }} onConnect={onConnect} onConnectStart={onConnectStart} onConnectEnd={onConnectEnd} isValidConnection={isValidConnection} onEdgeClick={(_, edge) => { if (!nodeInteractionsLocked) setEdges((current) => current.map((item) => ({ ...item, selected: item.id === edge.id }))) }} onEdgeDoubleClick={(_, edge) => { if (nodeInteractionsLocked) return; setEdges((current) => current.map((item) => { if (item.id !== edge.id) return item; const adopted = !item.data?.selected; const original = item.data?.originalStyle ?? item.style ?? { stroke: '#73869a', strokeWidth: 2.5 }; return { ...item, data: { ...item.data, selected: adopted, originalStyle: original }, style: adopted ? { stroke: '#b8d36b', strokeWidth: 2.6, strokeDasharray: '7 4' } : original } })) }} onNodeDoubleClick={(_, node) => { if (!activeNodeExecutionLocked && !nodeInteractionsLocked && !commentMode) { closeMenu(); setActiveNodeId(node.id) } }} onPaneClick={(event) => { if (activeNodeExecutionLocked || nodeInteractionsLocked) return; setBoxSelectionActive(false); if (commentMode) onAddComment(screenToFlowPosition({ x: event.clientX, y: event.clientY })); else { setActiveNodeId(null); setFocusedNodeId(null); setEdges((current) => current.map((item) => ({ ...item, selected: false }))) } }} onMoveStart={onMoveStart} onMove={onMove} onMoveEnd={onMoveEnd} zoomOnDoubleClick={false} zoomOnScroll={false} panOnScroll panOnScrollSpeed={1.5} zoomOnPinch minZoom={0.2} maxZoom={2} connectionRadius={110} snapToGrid={snapToGrid} snapGrid={[20, 20]} nodesConnectable={!commentMode && !nodeInteractionsLocked} nodesDraggable={false} elementsSelectable={!nodeInteractionsLocked} panOnDrag={[2]} selectionOnDrag={!nodeInteractionsLocked} selectionMode={SelectionMode.Partial} defaultEdgeOptions={{ style: { stroke: '#73869a', strokeWidth: 2.5 } }} deleteKeyCode={nodeInteractionsLocked || activeNodeExecutionLocked ? null : ['Backspace', 'Delete']} selectionKeyCode="Shift" multiSelectionKeyCode="Shift" proOptions={{ hideAttribution: true }} aria-label="节点式创意策划画布">
       <Background variant={BackgroundVariant.Dots} gap={24} size={1.15} color="#70747a" />
       {showMiniMap && <MiniMap position="bottom-left" className="canvas-minimap" pannable zoomable onClick={(_, point) => { void setCenter(point.x, point.y, { zoom: zoom / 100, duration: 260 }) }} nodeColor={(node) => node.type === 'image' ? '#426e7a' : node.type === 'file' ? '#756347' : '#5b526f'} maskColor="rgba(8, 9, 11, 0.72)" />}
       <CanvasTopbar readOnly={readOnly} viewMode={viewMode} onViewModeChange={setViewMode} onShare={() => setShareOpen((value) => !value)} shareOpen={shareOpen} shareMessage={shareMessage} onCopyShareLink={() => void copyReadOnlyLink()} onDownloadImage={() => void downloadCanvasImage()} onSearch={() => setSearchOpen(true)} presentationMode={presentationMode} onTogglePresentation={() => void togglePresentation()} leftCollapsed={leftCollapsed} agentCollapsed={agentCollapsed} onToggleAgent={onToggleAgent} />
@@ -727,6 +901,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
       {!modificationTargetIds && (selectedNodes.length > 1 || (boxSelectionActive && selectedNodes.length === 1)) && <NodeToolbar nodeId={selectedNodeIds} position={Position.Top} align="center" isVisible className="selection-toolbar">{selectedNodes.length > 1 && <><button aria-label="打组"><FolderPlus size={16} /><span>打组</span></button><span className="selection-toolbar-divider" /><button aria-label="宫格排列" title="宫格排列" onClick={() => arrangeSelectedNodes('grid')}><Grid2X2 size={16} /><span>宫格</span></button><button aria-label="水平排列" title="水平排列" onClick={() => arrangeSelectedNodes('horizontal')}><AlignHorizontalSpaceAround size={16} /><span>水平</span></button><button aria-label="垂直排列" title="垂直排列" onClick={() => arrangeSelectedNodes('vertical')}><AlignVerticalSpaceAround size={16} /><span>垂直</span></button><span className="selection-toolbar-divider" /></>}<button aria-label="创建副本" title="创建副本" onClick={duplicateSelectedNodes}><Copy size={16} /><span>副本</span></button><span className="selection-toolbar-divider" /><button className="selection-delete-button" aria-label="删除选中节点" title="删除选中节点" onClick={() => void deleteElements({ nodes: selectedNodeIds.map((id) => ({ id })) })}><Trash2 size={16} /><span>删除</span></button></NodeToolbar>}
       {activeNode && <NodeToolbar nodeId={activeNode.id} position={Position.Bottom} align="start" isVisible className="node-chat-panel"><NodeChatComposer key={activeNode.id} nodeId={activeNode.id} nodeTitle={activeNode.data.title} nodes={nodes} runStatus={activeNode.data.agentStatus} runSummary={activeNode.data.agentSummary} onClose={() => { if (!activeNodeExecutionLocked) setActiveNodeId(null) }} onSend={(prompt, model, options, actionMode, _assistantMode, signal, onProgress) => { setChatHistory((current) => [{ id: crypto.randomUUID(), category: actionMode === 'agent' ? 'agent' : activeNode.type, title: activeNode.data.title, prompt, createdAt: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }, ...current]); if (actionMode === 'agent') return onAgentRun(activeNode.id, prompt, model, options, signal); return onChatAnswer(activeNode.id, prompt, model, onProgress, signal) }} /></NodeToolbar>}
     </ReactFlow>
+    </CanvasNodeMovementContext.Provider>
     </CanvasNodeReadOnlyContext.Provider>
     {searchOpen && <div className="node-search-overlay" onMouseDown={() => setSearchOpen(false)}><div className="node-search-dialog" onMouseDown={(event) => event.stopPropagation()}><div className="node-search-input"><Search size={18} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={onSearchKeyDown} placeholder="搜索节点…" /></div><div className="node-search-results">{searchResults.map((node, index) => <button key={node.id} className={index === highlightedSearchIndex ? 'highlighted' : ''} aria-selected={index === highlightedSearchIndex} onMouseEnter={() => setHighlightedSearchIndex(index)} onClick={() => chooseSearchResult(node)}><span>{node.data.title}</span><small>{node.type}</small></button>)}</div></div></div>}
     {menu && <AddNodeMenu title={menu.mode === 'context' ? '添加上下文' : menu.mode === 'reference' ? '引用该节点生成' : '添加节点'} showImage={menu.mode !== 'context'} location={menu.screenPosition} onText={() => onAddText(menu.canvasPosition, connectCreatedNode)} onImage={() => onAddImage(menu.canvasPosition, connectCreatedNode)} onFile={() => onAddFile(menu.canvasPosition, connectCreatedNode)} onClose={closeMenu} />}

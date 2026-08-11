@@ -98,13 +98,16 @@ class SQLiteRepository:
             if "operation_mode" not in run_columns:
                 connection.execute("ALTER TABLE agent_runs ADD COLUMN operation_mode TEXT NOT NULL DEFAULT 'agent'")
 
-    def ensure_project(self, project_id: str, title: str = "NodeCanvas 项目") -> None:
-        now = utc_now()
+    def ensure_project(self, project_id: str) -> None:
         with self.connect() as connection:
-            connection.execute(
-                "INSERT OR IGNORE INTO projects (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (project_id, title, now, now),
-            )
+            exists = connection.execute("SELECT 1 FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not exists:
+            raise ValueError("project not found")
+
+    def project_title(self, project_id: str) -> str | None:
+        with self.connect() as connection:
+            row = connection.execute("SELECT title FROM projects WHERE id = ?", (project_id,)).fetchone()
+        return str(row["title"]) if row else None
 
     def list_projects(self) -> list[dict[str, str]]:
         with self.connect() as connection:

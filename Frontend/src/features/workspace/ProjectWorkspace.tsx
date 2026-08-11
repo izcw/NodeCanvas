@@ -112,7 +112,7 @@ export function ProjectWorkspaceProvider({ children, onProjectChange }: { childr
     if (!workspaceOpen) return
     let active = true
     void listWorkspaceProjects().then((stored) => {
-      if (!active || stored.length === 0) return
+      if (!active) return
       setProjects((local) => {
         const localById = new Map(local.map((project) => [project.id, project]))
         return stored.map((project) => ({
@@ -124,6 +124,7 @@ export function ProjectWorkspaceProvider({ children, onProjectChange }: { childr
           cover: project.cover_url ?? localById.get(project.id)?.cover,
         }))
       })
+      setActiveProjectId((current) => stored.some((project) => project.id === current) ? current : stored[0]?.id ?? null)
     }).catch(() => { /* Offline mode keeps the locally cached directory. */ })
     return () => { active = false }
   }, [workspaceOpen])
@@ -163,11 +164,13 @@ export function ProjectWorkspaceProvider({ children, onProjectChange }: { childr
     setProjects((items) => [...items, project])
     setActiveProjectId(project.id)
     cacheActiveProjectId(project.id)
-    navigateToProject(project.id)
-    setWorkspaceOpen(false)
     setMenuOpen(false)
-    void createWorkspaceProject(project.id, project.title).catch(() => { /* The local directory remains usable offline. */ })
-    onProjectChange(project, true)
+    const openProject = () => {
+      navigateToProject(project.id)
+      setWorkspaceOpen(false)
+      onProjectChange(project, true)
+    }
+    void createWorkspaceProject(project.id, project.title).then(openProject).catch(() => { openProject() /* The local directory remains usable offline. */ })
   }, [onProjectChange, projects.length])
 
   const renameProject = useCallback((id = activeProject?.id) => {
@@ -186,22 +189,26 @@ export function ProjectWorkspaceProvider({ children, onProjectChange }: { childr
   }, [])
 
   const deleteProject = useCallback((id = activeProject?.id) => {
-    if (!id || !activeProject) return
-    if (projects.length === 1) return
+    if (!id) return
     const project = projects.find((item) => item.id === id)
     if (!project) return
     const nextProjects = projects.filter((item) => item.id !== id)
-    const nextActive = sortedProjects(nextProjects)[0]
+    const nextActive = sortedProjects(nextProjects)[0] ?? null
     setProjects(nextProjects)
-    if (activeProject.id === id) {
-      setActiveProjectId(nextActive.id)
-      cacheActiveProjectId(nextActive.id)
-      navigateToProject(nextActive.id)
+    if (activeProject?.id === id) {
+      setActiveProjectId(nextActive?.id ?? null)
+      cacheActiveProjectId(nextActive?.id ?? '')
+      if (workspaceOpen || !nextActive) {
+        navigateToWorkspace()
+        setWorkspaceOpen(true)
+      } else {
+        navigateToProject(nextActive.id)
+        onProjectChange(nextActive, false)
+      }
     }
     setMenuOpen(false)
     void deleteWorkspaceProject(id).catch(() => { /* The local directory remains usable offline. */ })
-    if (activeProject.id === id) onProjectChange(nextActive, false)
-  }, [activeProject, onProjectChange, projects])
+  }, [activeProject?.id, onProjectChange, projects, workspaceOpen])
 
   const createProjectCopy = useCallback((id: string) => {
     const source = projects.find((project) => project.id === id)
@@ -293,7 +300,7 @@ export function ProjectWorkspaceHome({ hidden = false }: { hidden?: boolean }) {
         <button className={`favorite-project ${project.favorite ? 'active' : ''}`} onClick={() => toggleFavorite(project.id)} aria-label={project.favorite ? '取消收藏' : '收藏项目'}><Star size={18} fill={project.favorite ? 'currentColor' : 'none'} /></button>
         <ProjectCardMenu project={project} />
       </article>)}
-      {filteredProjects.length === 0 && <div className="project-empty-state">{projects.length === 0 ? '还没有项目，点击新建项目开始' : '没有匹配的项目'}</div>}
+      {projects.length > 0 && filteredProjects.length === 0 && <div className="project-empty-state">没有匹配的项目</div>}
     </div>
   </section>
 }

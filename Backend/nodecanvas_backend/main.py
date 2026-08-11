@@ -51,6 +51,13 @@ def is_run_cancelled(project_id: str, client_run_id: str | None, *, consume: boo
         return cancelled
 
 
+def with_project_title(project_id: str, request: AgentRunRequest) -> AgentRunRequest:
+    repository.ensure_project(project_id)
+    title = (repository.project_title(project_id) or "").strip()
+    project_title = None if not title or title.startswith("未命名项目") else title
+    return request.model_copy(update={"project_title": project_title})
+
+
 def index_knowledge_document(project_id: str, document_id: str) -> str:
     """Synchronize a document's derived vector index without losing source data."""
     if not vector_index.enabled:
@@ -168,12 +175,18 @@ def get_graph(project_id: str) -> GraphSnapshot:
 
 @app.put("/api/projects/{project_id}/graph", response_model=GraphSnapshot)
 def save_graph(project_id: str, graph: GraphSnapshot) -> GraphSnapshot:
-    return repository.save_graph(project_id, graph)
+    try:
+        return repository.save_graph(project_id, graph)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/shares")
 def create_share_link(project_id: str, graph: GraphSnapshot) -> dict[str, str]:
-    return {"id": repository.create_share_link(project_id, graph)}
+    try:
+        return {"id": repository.create_share_link(project_id, graph)}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/shares/{share_id}", response_model=GraphSnapshot)
@@ -187,6 +200,7 @@ def get_shared_graph(share_id: str) -> GraphSnapshot:
 @app.post("/api/projects/{project_id}/agent/runs", response_model=AgentRunResponse)
 def run_agent(project_id: str, request: AgentRunRequest) -> AgentRunResponse:
     try:
+        request = with_project_title(project_id, request)
         knowledge = vector_index.search(project_id, request.prompt) if vector_index.enabled else repository.search_knowledge(project_id, request.prompt)
         result = workflow.run(request, knowledge=knowledge)
         if is_run_cancelled(project_id, request.client_run_id, consume=True):
@@ -200,7 +214,7 @@ def run_agent(project_id: str, request: AgentRunRequest) -> AgentRunResponse:
     except RuntimeError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise HTTPException(status_code=404 if str(exc) == "project not found" else 422, detail=str(exc)) from exc
 
 
 @app.post("/api/projects/{project_id}/agent/runs/{client_run_id}/cancel")
@@ -223,6 +237,10 @@ def clear_agent_runs(project_id: str) -> None:
 def stream_agent_chat(project_id: str, request: AgentRunRequest) -> StreamingResponse:
     if request.operation_mode != "chat":
         raise HTTPException(status_code=422, detail="stream endpoint only accepts chat mode")
+    try:
+        request = with_project_title(project_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     knowledge = vector_index.search(project_id, request.prompt) if vector_index.enabled else repository.search_knowledge(project_id, request.prompt)
     context, provider_name, chunks = workflow.stream_chat(request, knowledge)
 
@@ -265,6 +283,10 @@ def stream_agent_chat(project_id: str, request: AgentRunRequest) -> StreamingRes
 def stream_node_chat(project_id: str, request: AgentRunRequest) -> StreamingResponse:
     if request.operation_mode != "update_source":
         raise HTTPException(status_code=422, detail="node chat stream endpoint only accepts update_source mode")
+    try:
+        request = with_project_title(project_id, request)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     knowledge = vector_index.search(project_id, request.prompt) if vector_index.enabled else repository.search_knowledge(project_id, request.prompt)
     context, provider_name, chunks = workflow.stream_node_update(request, knowledge)
 
@@ -311,6 +333,8 @@ def add_knowledge_document(project_id: str, document: KnowledgeDocumentCreate) -
         )
         status = index_knowledge_document(project_id, document.id)
     except Exception as exc:
+        if isinstance(exc, ValueError) and str(exc) == "project not found":
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         if "UNIQUE constraint" in str(exc):
             raise HTTPException(status_code=409, detail="document already exists") from exc
         raise

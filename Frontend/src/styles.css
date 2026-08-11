@@ -1518,13 +1518,30 @@ textarea:focus-visible {
 .canvas-target-handle.react-flow__handle-left { transform: translate(-5px, -50%); }
 
 .node-resize-line { border-color: #9eb2c4 !important; }
+.node-resize-controls {
+  position: absolute;
+  z-index: 40;
+  inset: 0;
+  pointer-events: none;
+}
 .node-resize-handle {
-  width: 9px !important;
-  height: 9px !important;
+  position: absolute;
+  width: 14px !important;
+  height: 14px !important;
+  margin: 0;
+  padding: 0;
   border: 1px solid #d9e1e7 !important;
   border-radius: 3px !important;
   background: #26313b !important;
+  pointer-events: all !important;
+  touch-action: none;
 }
+.node-resize-handle.top { top: 0; transform: translateY(-50%); }
+.node-resize-handle.right { right: 0; transform: translate(50%, -50%); }
+.node-resize-handle.bottom { bottom: 0; transform: translateY(50%); }
+.node-resize-handle.left { left: 0; transform: translate(-50%, -50%); }
+.node-resize-handle.bottom.left { transform: translate(-50%, 50%); }
+.node-resize-handle.bottom.right { transform: translate(50%, 50%); }
 
 .add-menu.at-cursor {
   right: auto;
@@ -1563,6 +1580,11 @@ textarea:focus-visible {
 .selection-toolbar .selection-delete-button { color: #e6a0a9; }
 .selection-toolbar .selection-delete-button:hover { color: #ffd4d9; background: rgba(151, 53, 67, .28); }
 .selection-toolbar-divider { width: 1px; height: 22px; margin: 0 5px; background: #57595e; }
+.react-flow__nodesselection-rect {
+  touch-action: none;
+  cursor: grab;
+}
+.canvas-stage.is-selection-moving .react-flow__nodesselection-rect { cursor: grabbing; }
 .selection-connect-handle { display: block; width: 12px; height: 12px; margin-left: 5px; border: 2px solid #e5f6ff; border-radius: 50%; background: #32b9ed; box-shadow: 0 0 0 3px rgba(50, 185, 237, .2); cursor: crosshair; }
 .selection-connector-node { overflow: visible !important; background: transparent !important; pointer-events: auto !important; }
 .selection-connector-node .selection-connect-handle { position: absolute !important; z-index: 30 !important; top: 50% !important; right: -8px !important; width: 12px !important; height: 12px !important; margin: 0 !important; pointer-events: all !important; transform: translateY(-50%) !important; }
@@ -2368,7 +2390,8 @@ textarea:focus-visible {
 .workspace-filter-picker .node-model-menu { top: calc(100% + 8px); right: 0; bottom: auto; left: auto; width: 206px; max-height: none; }
 .workspace-filter-picker .node-model-option { min-height: 48px; }
 .project-empty-state { display: grid; min-height: 204px; place-items: center; border: 1px dashed #3b3d42; border-radius: 16px; color: #858b94; font-size: 14px; }
-.project-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; max-width: 1200px; margin: auto; }
+.project-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; max-width: 1200px; margin: auto; }
+@media (max-width: 900px) { .project-grid { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); } }
 .project-card { position: relative; min-height: 204px; overflow: visible; border: 1px solid #303237; border-radius: 16px; background: #202123; cursor: pointer; transition: transform .16s ease, border-color .16s ease; }
 .project-card:hover { transform: translateY(-3px); border-color: #62666d; }
 .project-card:has(.project-card-menu-anchor [aria-expanded="true"]) { z-index: 20; }
@@ -2381,7 +2404,7 @@ textarea:focus-visible {
 .project-card-main * { cursor: pointer; }
 .project-card-art { display: block; width: 100%; height: 120px; margin-bottom: 12px; border-radius: 10px; background: radial-gradient(circle at 20% 12%, #3f7fe5 0, #2860c4 31%, #3c465a 72%, #424244 100%); background-position: center; background-size: cover; }
 .project-card-art.has-image { background-repeat: no-repeat; }
-.project-card strong { overflow: hidden; max-width: calc(100% - 24px); font-size: 15px; text-overflow: ellipsis; white-space: nowrap; }
+.project-card-main > strong { display: -webkit-box; overflow: hidden; min-height: 40px; max-width: calc(100% - 24px); font-size: 15px; line-height: 20px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .project-card small { margin-top: 5px; color: #9298a0; font-size: 12px; }
 .favorite-project { position: absolute; top: 18px; right: 18px; display: grid; width: 31px; height: 31px; place-items: center; padding: 0; border: 0; border-radius: 8px; color: #c5c9d0; background: rgba(12, 13, 16, .45); }
 .favorite-project:hover, .favorite-project.active { color: #ffd260; background: rgba(12, 13, 16, .72); }
@@ -2620,6 +2643,8 @@ textarea:focus-visible {
   width: 100%;
   height: 100%;
   color: var(--text);
+  touch-action: none;
+  cursor: grab;
 }
 
 .node-card {
@@ -2953,6 +2978,23 @@ textarea:focus-visible {
   color: #5f6670;
 }
 
+/* In view mode Chrome otherwise turns the pointer gesture into native text
+   selection after React Flow has already started the node drag. */
+.canvas-node .markdown-preview,
+.canvas-node .node-card__title:not(.nodrag),
+.canvas-node .node-card__body textarea:not(.nodrag) {
+  -webkit-user-select: none !important;
+  user-select: none !important;
+  cursor: grab;
+}
+
+.canvas-node .node-card__title.nodrag,
+.canvas-node .node-card__body textarea.nodrag {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text;
+}
+
 .node-card__body--image {
   overflow: hidden;
   background: #101215;
@@ -3075,7 +3117,9 @@ textarea:focus-visible {
   z-index: 21;
   width: 18px;
   height: 18px;
-  pointer-events: none;
+  pointer-events: auto;
+  touch-action: none;
+  cursor: crosshair;
 }
 
 /* Multi-node selection uses its own collective connector; hide individual
@@ -3084,6 +3128,37 @@ textarea:focus-visible {
 .canvas-stage.has-box-selection .node-anchor {
   visibility: hidden;
   pointer-events: none;
+}
+
+/* While drawing a connection, expose every valid left/right port so the
+   destination is discoverable before the pointer reaches the node. */
+.canvas-stage.is-pointer-connecting .node-anchor {
+  visibility: visible !important;
+  pointer-events: auto !important;
+}
+
+.canvas-stage.is-pointer-connecting .canvas-source-handle {
+  opacity: 1 !important;
+}
+
+.react-flow__node.is-magnetic-target .node-card {
+  border-color: #b8a8ff !important;
+  box-shadow:
+    0 0 0 2px rgba(184, 168, 255, .32),
+    0 0 34px rgba(157, 140, 255, .24),
+    0 24px 80px rgba(0, 0, 0, .42) !important;
+}
+
+.react-flow__node.is-magnetic-target .canvas-source-handle {
+  border-color: #d2c9ff !important;
+  background: #8975ef !important;
+  box-shadow: 0 0 0 4px rgba(157, 140, 255, .2), 0 0 18px rgba(184, 168, 255, .8) !important;
+  animation: magnetic-anchor-pulse 680ms ease-in-out infinite alternate;
+}
+
+@keyframes magnetic-anchor-pulse {
+  from { scale: 1; }
+  to { scale: 1.22; }
 }
 
 .node-anchor--top {
@@ -3257,10 +3332,13 @@ textarea:focus-visible {
   /* border-color: #9e8dff !important; */
 }
 
-/* Resize affordances appear one at a time only when the pointer reaches a corner. */
+/* Show the four corner resize affordances whenever a node is selected. */
 .canvas-node:hover .node-resize-handle,
-.canvas-node.is-selected .node-resize-handle { opacity: 0; }
-.node-resize-handle:hover { opacity: 1 !important; }
+.canvas-node.is-selected .node-resize-handle { opacity: 1; }
+.node-resize-handle.top.left,
+.node-resize-handle.bottom.right { cursor: nwse-resize; }
+.node-resize-handle.top.right,
+.node-resize-handle.bottom.left { cursor: nesw-resize; }
 .node-resize-handle.top:not(.left):not(.right),
 .node-resize-handle.bottom:not(.left):not(.right),
 .node-resize-handle.left:not(.top):not(.bottom),

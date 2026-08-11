@@ -75,6 +75,7 @@ class AgentRunRequest(BaseModel):
     client_run_id: str | None = Field(default=None, max_length=120)
     source_node_id: str
     prompt: str = Field(min_length=1, max_length=12_000)
+    project_title: str | None = Field(default=None, max_length=240)
     model: str = "DeepSeek V4 Flash"
     generation_type: GenerationType = "文本"
     operation_mode: OperationMode = "agent"
@@ -101,6 +102,7 @@ class ContextItem(BaseModel):
 class ContextSnapshot(BaseModel):
     source_node_id: str
     goal: str
+    project_title: str | None = None
     direct_inputs: list[ContextItem]
     focus_node: ContextItem | None = None
     current_node: ContextItem | None = None

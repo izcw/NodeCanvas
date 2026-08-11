@@ -6,8 +6,7 @@ export const ACTIVE_PROJECT_STORAGE_KEY = 'nodecanvas:active-project-id:v1'
 export function currentProjectId() {
   const url = new URL(window.location.href)
   const projectFromUrl = url.pathname.match(/^\/canvas\/([^/]+)$/)?.[1]
-  if (projectFromUrl) return projectFromUrl
-  return localStorage.getItem(ACTIVE_PROJECT_STORAGE_KEY) || ''
+  return projectFromUrl ? decodeURIComponent(projectFromUrl) : ''
 }
 
 export type ProjectGraph = {

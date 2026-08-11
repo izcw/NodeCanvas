@@ -2,6 +2,7 @@
 import {
   createContext,
   type ChangeEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   lazy,
   memo,
@@ -14,10 +15,10 @@ import {
 import { createPortal } from 'react-dom'
 import {
   Handle,
-  NodeResizer,
   type NodeProps,
   Position,
   useReactFlow,
+  useViewport,
 } from '@xyflow/react'
 import {
   Copy,
@@ -38,6 +39,18 @@ import { NodeSelect } from './NodeSelect'
 
 const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'))
 export const CanvasNodeReadOnlyContext = createContext(false)
+type CanvasNodeMovementContextValue = {
+  enabled: boolean
+  snapToGrid: boolean
+  onDragStart: () => void
+  onDragStop: () => void
+}
+export const CanvasNodeMovementContext = createContext<CanvasNodeMovementContextValue>({
+  enabled: false,
+  snapToGrid: false,
+  onDragStart: () => undefined,
+  onDragStop: () => undefined,
+})
 
 type NodeKind = CanvasNode['type']
 
@@ -61,22 +74,26 @@ type NodeHeaderProps = {
   nodeId: string
 }
 
-function openConnectionMenu(event: React.MouseEvent, sourceId: string, side: 'context' | 'reference') {
+type ResizeCorner = 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+
+function startConnectionDrag(event: ReactPointerEvent<HTMLElement>, sourceId: string, side: 'context' | 'reference') {
+  if (event.button !== 0) return
+  event.preventDefault()
   event.stopPropagation()
-  window.dispatchEvent(new CustomEvent('nodecanvas:open-connection-menu', {
-    detail: { sourceId, side, x: event.clientX, y: event.clientY },
+  window.dispatchEvent(new CustomEvent('nodecanvas:start-pointer-connection', {
+    detail: { sourceId, side, pointerId: event.pointerId, x: event.clientX, y: event.clientY },
   }))
 }
 
 function NodeHandles({ id }: { id: string }) {
   return (
     <>
-      <span className="node-anchor node-anchor--left" aria-label="添加上下文" title="添加上下文">
+      <span className="node-anchor node-anchor--left" aria-label="添加上下文" title="添加上下文" onPointerDown={(event) => startConnectionDrag(event, id, 'context')}>
         <Handle id="left-target" className="canvas-handle canvas-target-handle" type="target" position={Position.Left} />
-        <Handle id="left-context-source" className="canvas-handle canvas-source-handle canvas-context-handle" type="source" position={Position.Left} onClick={(event) => openConnectionMenu(event, id, 'context')} />
+        <Handle id="left-context-source" className="canvas-handle canvas-source-handle canvas-context-handle" type="source" position={Position.Left} />
       </span>
-      <span className="node-anchor node-anchor--right" aria-label="引用该节点生成" title="引用该节点生成">
-        <Handle id="right-source" className="canvas-handle canvas-source-handle" type="source" position={Position.Right} onClick={(event) => openConnectionMenu(event, id, 'reference')} />
+      <span className="node-anchor node-anchor--right" aria-label="引用该节点生成" title="引用该节点生成" onPointerDown={(event) => startConnectionDrag(event, id, 'reference')}>
+        <Handle id="right-source" className="canvas-handle canvas-source-handle" type="source" position={Position.Right} />
       </span>
     </>
   )
@@ -210,13 +227,149 @@ function NodeFrame({
   connectable = true,
   generationStatus,
 }: NodeFrameProps) {
-  const { getNode, getNodes, setNodes } = useReactFlow()
+  const { getNode, getNodes, getViewport, setNodes } = useReactFlow()
+  const { zoom: viewportZoom } = useViewport()
   const readOnly = useContext(CanvasNodeReadOnlyContext)
+  const nodeMovement = useContext(CanvasNodeMovementContext)
   const [menuOpen, setMenuOpen] = useState(false)
   const [previewOpen, setPreviewOpen] = useState(false)
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 })
   const frameRef = useRef<HTMLElement>(null)
   const imageInputRef = useRef<HTMLInputElement>(null)
+
+  const startMove = (event: ReactPointerEvent<HTMLElement>) => {
+    if (readOnly || !nodeMovement.enabled || event.button !== 0) return
+    const target = event.target
+    if (!(target instanceof Element)) return
+    if (target.closest('.nodrag, .react-flow__handle, .node-resize-controls, .node-context-menu, button, a, select, [role="button"]')) return
+
+    const draggedNode = getNode(id)
+    if (!draggedNode) return
+    const nodesAtStart = getNodes()
+    const movingIds = new Set(
+      draggedNode.selected
+        ? nodesAtStart.filter((node) => node.selected && node.draggable !== false).map((node) => node.id)
+        : [id],
+    )
+    const positionsAtStart = new Map(
+      nodesAtStart
+        .filter((node) => movingIds.has(node.id))
+        .map((node) => [node.id, { ...node.position }]),
+    )
+    const draggedPosition = positionsAtStart.get(id)
+    if (!draggedPosition) return
+
+    const pointerId = event.pointerId
+    const startPoint = { x: event.clientX, y: event.clientY }
+    const previousUserSelect = document.body.style.userSelect
+    let moving = false
+
+    const move = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return
+      const screenX = moveEvent.clientX - startPoint.x
+      const screenY = moveEvent.clientY - startPoint.y
+      if (!moving && Math.hypot(screenX, screenY) < 4) return
+
+      if (!moving) {
+        moving = true
+        document.body.style.userSelect = 'none'
+        window.getSelection()?.removeAllRanges()
+        nodeMovement.onDragStart()
+      }
+
+      moveEvent.preventDefault()
+      const zoom = Math.max(0.01, getViewport().zoom)
+      let deltaX = screenX / zoom
+      let deltaY = screenY / zoom
+      if (nodeMovement.snapToGrid) {
+        deltaX = Math.round((draggedPosition.x + deltaX) / 20) * 20 - draggedPosition.x
+        deltaY = Math.round((draggedPosition.y + deltaY) / 20) * 20 - draggedPosition.y
+      }
+
+      setNodes((current) => current.map((node) => {
+        const position = positionsAtStart.get(node.id)
+        if (!position) return draggedNode.selected ? node : { ...node, selected: false }
+        return {
+          ...node,
+          selected: true,
+          position: { x: position.x + deltaX, y: position.y + deltaY },
+        }
+      }))
+    }
+
+    const finish = (finishEvent: PointerEvent) => {
+      if (finishEvent.pointerId !== pointerId) return
+      window.removeEventListener('pointermove', move, true)
+      window.removeEventListener('pointerup', finish, true)
+      window.removeEventListener('pointercancel', finish, true)
+      document.body.style.userSelect = previousUserSelect
+      if (moving) nodeMovement.onDragStop()
+    }
+
+    window.addEventListener('pointermove', move, { capture: true, passive: false })
+    window.addEventListener('pointerup', finish, true)
+    window.addEventListener('pointercancel', finish, true)
+  }
+
+  const startResize = (corner: ResizeCorner, event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (readOnly || event.button !== 0) return
+    const node = getNode(id)
+    if (!node) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+
+    const styledWidth = Number.parseFloat(String(node.style?.width ?? ''))
+    const styledHeight = Number.parseFloat(String(node.style?.height ?? ''))
+    const startWidth = node.measured?.width ?? node.width ?? (Number.isFinite(styledWidth) ? styledWidth : minWidth)
+    const startHeight = node.measured?.height ?? node.height ?? (Number.isFinite(styledHeight) ? styledHeight : minHeight)
+    const startPosition = { ...node.position }
+    const startPoint = { x: event.clientX, y: event.clientY }
+    const pointerId = event.pointerId
+    const handle = event.currentTarget
+    const previousUserSelect = document.body.style.userSelect
+
+    document.body.style.userSelect = 'none'
+
+    const resize = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return
+      moveEvent.preventDefault()
+      const zoom = Math.max(0.01, getViewport().zoom)
+      const horizontalDirection = corner.endsWith('right') ? 1 : -1
+      const verticalDirection = corner.startsWith('bottom') ? 1 : -1
+      const requestedWidth = startWidth + ((moveEvent.clientX - startPoint.x) / zoom) * horizontalDirection
+      const requestedHeight = startHeight + ((moveEvent.clientY - startPoint.y) / zoom) * verticalDirection
+      const width = Math.min(maxWidth, Math.max(minWidth, requestedWidth))
+      const height = Math.min(maxHeight, Math.max(minHeight, requestedHeight))
+      const position = {
+        x: corner.endsWith('left') ? startPosition.x + startWidth - width : startPosition.x,
+        y: corner.startsWith('top') ? startPosition.y + startHeight - height : startPosition.y,
+      }
+
+      setNodes((current) => current.map((item) => item.id === id ? {
+        ...item,
+        position,
+        width,
+        height,
+        measured: { width, height },
+        style: { ...item.style, width, height },
+      } : item))
+    }
+
+    const finish = (finishEvent: PointerEvent) => {
+      if (finishEvent.pointerId !== pointerId) return
+      window.removeEventListener('pointermove', resize, true)
+      window.removeEventListener('pointerup', finish, true)
+      window.removeEventListener('pointercancel', finish, true)
+      if (handle.hasPointerCapture(pointerId)) handle.releasePointerCapture(pointerId)
+      document.body.style.userSelect = previousUserSelect
+    }
+
+    window.addEventListener('pointermove', resize, { capture: true, passive: false })
+    window.addEventListener('pointerup', finish, true)
+    window.addEventListener('pointercancel', finish, true)
+  }
 
   const getMenuPosition = () => {
     const frame = frameRef.current
@@ -305,6 +458,7 @@ function NodeFrame({
     <article
       ref={frameRef}
       className={`canvas-node canvas-node--${kind} ${selected ? 'is-selected' : ''}`}
+      onPointerDown={startMove}
     >
       <input
         ref={imageInputRef}
@@ -315,15 +469,12 @@ function NodeFrame({
         aria-hidden="true"
         onChange={replaceImage}
       />
-      <NodeResizer
-        isVisible={selected}
-        minWidth={minWidth}
-        minHeight={minHeight}
-        maxWidth={maxWidth}
-        maxHeight={maxHeight}
-        lineClassName="node-resize-line"
-        handleClassName="node-resize-handle"
-      />
+      {selected && !readOnly && <div className="node-resize-controls nodrag" aria-label="调整节点大小">
+        <button type="button" className="node-resize-handle top left nodrag" style={{ scale: String(1 / Math.max(0.01, viewportZoom)) }} aria-label="从左上角调整节点大小" onPointerDown={(event) => startResize('top-left', event)} />
+        <button type="button" className="node-resize-handle top right nodrag" style={{ scale: String(1 / Math.max(0.01, viewportZoom)) }} aria-label="从右上角调整节点大小" onPointerDown={(event) => startResize('top-right', event)} />
+        <button type="button" className="node-resize-handle bottom left nodrag" style={{ scale: String(1 / Math.max(0.01, viewportZoom)) }} aria-label="从左下角调整节点大小" onPointerDown={(event) => startResize('bottom-left', event)} />
+        <button type="button" className="node-resize-handle bottom right nodrag" style={{ scale: String(1 / Math.max(0.01, viewportZoom)) }} aria-label="从右下角调整节点大小" onPointerDown={(event) => startResize('bottom-right', event)} />
+      </div>}
       {connectable && <NodeHandles id={id} />}
       <div className="node-card">{children}</div>
       {generationStatus && <GenerationSand status={generationStatus} />}
@@ -470,14 +621,17 @@ function NodeHeader({
   nodeId,
 }: NodeHeaderProps) {
   const { updateNodeData } = useReactFlow()
+  const [editingTitle, setEditingTitle] = useState(false)
 
   return (
     <header className="node-card__header" title={`${label}：${title}`}>
       <span className="node-card__icon">{icon}</span>
       <span className="node-card__type">{label}</span>
       <input
-        className="node-card__title nodrag"
+        className={`node-card__title ${editingTitle ? 'nodrag' : ''}`}
         value={title}
+        onFocus={() => setEditingTitle(true)}
+        onBlur={() => setEditingTitle(false)}
         onChange={(event) =>
           updateNodeData(nodeId, { title: event.target.value })
         }
@@ -492,6 +646,7 @@ export const TextNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
   const { updateNodeData } = useReactFlow()
   const format = data.format ?? 'text'
   const [editingMarkdown, setEditingMarkdown] = useState(false)
+  const [editingText, setEditingText] = useState(false)
 
   useEffect(() => {
     if (format === 'text') setEditingMarkdown(false)
@@ -516,7 +671,7 @@ export const TextNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
       />
       <div className="node-card__body node-card__body--text">
         {format === 'markdown' && !editingMarkdown ? (
-          <div className="markdown-preview nodrag nopan nowheel" aria-label={`${data.title} Markdown 预览`}>
+          <div className="markdown-preview nopan nowheel" aria-label={`${data.title} Markdown 预览`}>
             {data.content?.trim() ? (
               <Suspense fallback={<span className="markdown-preview__empty">正在渲染 Markdown…</span>}>
                 <MarkdownRenderer content={data.content} />
@@ -525,14 +680,17 @@ export const TextNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
           </div>
         ) : (
           <textarea
-            className="nodrag nopan nowheel"
+            className={`${format === 'markdown' || editingText ? 'nodrag ' : ''}nopan nowheel`}
             value={data.content ?? ''}
+            onFocus={() => setEditingText(true)}
+            onBlur={() => setEditingText(false)}
+            onDoubleClick={(event) => event.stopPropagation()}
             onChange={(event) => updateNodeData(id, { content: event.target.value })}
             placeholder={format === 'markdown' ? '输入 Markdown 源码…' : '写下想法、脚本或提示词…'}
             aria-label={`${data.title}内容`}
           />
         )}
-        <div className="text-node-controls nodrag nopan">
+        <div className="text-node-controls nopan">
           <NodeSelect className="text-format-picker" value={format} ariaLabel="选择文本格式" onChange={(value) => { const nextFormat = value as 'text' | 'markdown'; updateNodeData(id, { format: nextFormat }); setEditingMarkdown(false) }} options={[{ value: 'text', label: '纯文本', description: '普通文本编辑', icon: <FileText size={18} /> }, { value: 'markdown', label: 'Markdown', description: '渲染 Markdown 内容', icon: <Code2 size={18} /> }]} />
           {format === 'markdown' && <button type="button" className="markdown-edit-toggle nodrag nopan" onClick={(event) => { event.stopPropagation(); setEditingMarkdown((value) => !value) }} aria-label={editingMarkdown ? '完成 Markdown 编辑并预览' : '编辑 Markdown 源码'}>{editingMarkdown ? <><Check size={13} />预览</> : <><Pencil size={13} />编辑</>}</button>}
         </div>
@@ -602,6 +760,7 @@ export const FileNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
 export const CommentNode = memo(
   ({ id, data, selected }: NodeProps<CanvasNode>) => {
     const { updateNodeData } = useReactFlow()
+    const [editingComment, setEditingComment] = useState(false)
 
     return (
       <NodeFrame
@@ -623,8 +782,11 @@ export const CommentNode = memo(
         />
         <div className="node-card__body node-card__body--comment">
           <textarea
-            className="nodrag nopan nowheel"
+            className={`${editingComment ? 'nodrag ' : ''}nopan nowheel`}
             value={data.content ?? ''}
+            onFocus={() => setEditingComment(true)}
+            onBlur={() => setEditingComment(false)}
+            onDoubleClick={(event) => event.stopPropagation()}
             onChange={(event) =>
               updateNodeData(id, { content: event.target.value })
             }

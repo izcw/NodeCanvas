@@ -177,9 +177,6 @@ function Workspace() {
           setNodes(clearTransientNodeState(graph.nodes))
           setEdges(graph.edges)
           graphRevisionRef.current = graph.revision
-        } else {
-          const stored = await saveProjectGraph([], [])
-          if (active) graphRevisionRef.current = stored.revision
         }
       })
       .catch((error) => {

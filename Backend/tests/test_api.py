@@ -7,6 +7,7 @@ from threading import Event
 
 from fastapi.testclient import TestClient
 
+from Agent.nodecanvas_agent.models import AgentRunRequest
 from Agent.nodecanvas_agent.provider import DeterministicProvider
 from Agent.nodecanvas_agent.workflow import AgentWorkflow
 from Backend.nodecanvas_backend import main
@@ -33,10 +34,16 @@ class BlockingProvider(DeterministicProvider):
         return super().generate(**kwargs)
 
 
+def create_test_project(client: TestClient, project_id: str, title: str) -> None:
+    response = client.post("/api/projects", json={"id": project_id, "title": title})
+    assert response.status_code == 201, response.text
+
+
 def test_agent_endpoint_persists_run_and_graph(tmp_path: Path) -> None:
     main.repository = SQLiteRepository(tmp_path / "api.db")
     main.workflow = AgentWorkflow(provider=DeterministicProvider())
     with TestClient(main.app) as client:
+        create_test_project(client, "test", "磁轴键盘营销策划")
         payload = {
             "source_node_id": "agent-1",
             "prompt": "生成两个传播方向",
@@ -56,6 +63,7 @@ def test_agent_endpoint_persists_run_and_graph(tmp_path: Path) -> None:
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["run"]["provider"] == "deterministic-local"
+        assert body["run"]["context"]["project_title"] == "磁轴键盘营销策划"
         assert len(body["run"]["candidates"]) == 2
         assert len(body["graph"]["nodes"]) == 4
         generated_ids = [operation["node_id"] for operation in body["run"]["operations"]]
@@ -84,6 +92,7 @@ def test_cancelled_agent_run_never_writes_generated_nodes(tmp_path: Path) -> Non
         "edges": [{"id": "e1", "source": "brief-1", "target": "agent-1", "sourceHandle": "right-source", "targetHandle": "left-target"}],
     }
     with TestClient(main.app) as client:
+        create_test_project(client, "travel", "北京三日游")
         assert client.put("/api/projects/travel/graph", json=graph).status_code == 200
         assert client.post("/api/projects/travel/agent/runs/ui-run-1/cancel").json() == {"cancelled": True}
         response = client.post("/api/projects/travel/agent/runs", json={
@@ -124,6 +133,7 @@ def test_agent_can_be_cancelled_while_model_is_still_generating(tmp_path: Path) 
         "graph": graph,
     }
     with TestClient(main.app) as client, ThreadPoolExecutor(max_workers=1) as executor:
+        create_test_project(client, "live", "实时规划")
         assert client.put("/api/projects/live/graph", json=graph).status_code == 200
         future = executor.submit(client.post, "/api/projects/live/agent/runs", json=payload)
         assert started.wait(timeout=1), "model generation did not start"
@@ -146,6 +156,7 @@ def test_cancelled_node_chat_discards_stream_and_keeps_original_content(tmp_path
         "edges": [],
     }
     with TestClient(main.app) as client:
+        create_test_project(client, "travel", "北京三日游")
         assert client.put("/api/projects/travel/graph", json=graph).status_code == 200
         assert client.post("/api/projects/travel/agent/runs/ui-chat-1/cancel").status_code == 200
         response = client.post("/api/projects/travel/agent/node-chat/stream", json={
@@ -170,6 +181,7 @@ def test_agent_chat_streams_deltas_and_persists_complete_markdown(tmp_path: Path
     main.repository = SQLiteRepository(tmp_path / "stream.db")
     main.workflow = AgentWorkflow(provider=DeterministicProvider())
     with TestClient(main.app) as client:
+        create_test_project(client, "travel", "北京三日游")
         payload = {
             "source_node_id": "idea-1",
             "prompt": "规划一下",
@@ -199,6 +211,7 @@ def test_node_chat_streams_content_then_updates_graph(tmp_path: Path) -> None:
     main.repository = SQLiteRepository(tmp_path / "node-stream.db")
     main.workflow = AgentWorkflow(provider=DeterministicProvider())
     with TestClient(main.app) as client:
+        create_test_project(client, "test", "新品传播策划")
         payload = {
             "source_node_id": "brief-1",
             "prompt": "补充目标受众与交付要求",
@@ -229,6 +242,7 @@ def test_node_chat_keeps_reasoning_events_out_of_final_content(tmp_path: Path) -
     main.repository = SQLiteRepository(tmp_path / "reasoning-stream.db")
     main.workflow = AgentWorkflow(provider=ReasoningStreamProvider())
     with TestClient(main.app) as client:
+        create_test_project(client, "test", "职业电竞新品策划")
         payload = {
             "source_node_id": "brief-1",
             "prompt": "完善需求",
@@ -267,6 +281,7 @@ def test_model_connection_endpoint_does_not_persist_credentials(tmp_path: Path, 
 def test_share_link_returns_a_read_only_graph_snapshot(tmp_path: Path) -> None:
     main.repository = SQLiteRepository(tmp_path / "share.db")
     with TestClient(main.app) as client:
+        create_test_project(client, "test", "分享测试")
         graph = {
             "nodes": [{"id": "n1", "type": "text", "position": {"x": 0, "y": 0}, "data": {"title": "Shared"}}],
             "edges": [],
@@ -281,6 +296,7 @@ def test_share_link_returns_a_read_only_graph_snapshot(tmp_path: Path) -> None:
 def test_knowledge_document_can_be_listed_and_deleted(tmp_path: Path) -> None:
     main.repository = SQLiteRepository(tmp_path / "knowledge.db")
     with TestClient(main.app) as client:
+        create_test_project(client, "test", "知识库测试")
         created = client.post("/api/projects/test/knowledge/documents", json={
             "id": "brief", "name": "brief.md", "kind": "MD", "content": "磁轴键盘卖点",
         })
@@ -295,6 +311,7 @@ def test_knowledge_document_can_be_listed_and_deleted(tmp_path: Path) -> None:
 def test_knowledge_document_can_be_reindexed(tmp_path: Path) -> None:
     main.repository = SQLiteRepository(tmp_path / "knowledge-retry.db")
     with TestClient(main.app) as client:
+        create_test_project(client, "test", "知识库重建测试")
         created = client.post("/api/projects/test/knowledge/documents", json={
             "id": "brief", "name": "brief.md", "kind": "MD", "content": "磁轴键盘需要低延迟响应。",
         })
@@ -334,3 +351,28 @@ def test_project_directory_lists_existing_and_new_projects(tmp_path: Path) -> No
         assert copied.json()["title"] == "发布策划 V2 副本"
         assert copied.json()["cover_url"] == cover
         assert client.delete("/api/projects/launch").status_code == 204
+
+
+def test_unnamed_project_is_not_added_to_agent_theme_context(tmp_path: Path) -> None:
+    main.repository = SQLiteRepository(tmp_path / "unnamed-project.db")
+    with TestClient(main.app) as client:
+        create_test_project(client, "unnamed", "未命名项目 1")
+        request = AgentRunRequest.model_validate({
+            "source_node_id": "source",
+            "prompt": "继续完善",
+            "graph": {
+                "nodes": [{"id": "source", "type": "text", "position": {"x": 0, "y": 0}, "data": {"title": "需求"}}],
+                "edges": [],
+            },
+        })
+
+        assert main.with_project_title("unnamed", request).project_title is None
+
+
+def test_missing_project_graph_save_does_not_create_directory_entry(tmp_path: Path) -> None:
+    main.repository = SQLiteRepository(tmp_path / "missing-project.db")
+    with TestClient(main.app) as client:
+        response = client.put("/api/projects/missing/graph", json={"nodes": [], "edges": []})
+
+        assert response.status_code == 404
+        assert client.get("/api/projects").json() == []

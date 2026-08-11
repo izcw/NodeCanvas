@@ -82,6 +82,14 @@ def test_workflow_uses_direct_context_and_grid_count() -> None:
     assert {"resolve_context", "generate_candidates", "validate_candidates", "compile_operations"}.issubset(workflow.graph.get_graph().nodes)
 
 
+def test_workflow_exposes_project_title_as_theme_context() -> None:
+    request = make_request().model_copy(update={"project_title": "磁轴键盘上市策划"})
+    result = AgentWorkflow(provider=DeterministicProvider()).run(request)
+
+    assert result.context.project_title == "磁轴键盘上市策划"
+    assert "磁轴键盘上市策划" in result.candidates[0].content
+
+
 def test_single_row_titles_name_the_strategy_and_its_thought_steps() -> None:
     result = AgentWorkflow(provider=DeterministicProvider()).run(make_request(rows=1, columns=4))
 
