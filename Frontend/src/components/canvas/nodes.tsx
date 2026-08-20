@@ -36,6 +36,7 @@ import {
 } from 'lucide-react'
 import type { CanvasNode } from '../../types/canvas'
 import { NodeSelect } from './NodeSelect'
+import { deriveTextNodeTitle, shouldAutoUpdateTextNodeTitle } from '../../lib/nodeTitle'
 
 const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'))
 export const CanvasNodeReadOnlyContext = createContext(false)
@@ -633,7 +634,7 @@ function NodeHeader({
         onFocus={() => setEditingTitle(true)}
         onBlur={() => setEditingTitle(false)}
         onChange={(event) =>
-          updateNodeData(nodeId, { title: event.target.value })
+          updateNodeData(nodeId, { title: event.target.value, titleMode: 'manual' })
         }
         onClick={(event) => event.stopPropagation()}
         aria-label={`${label}自定义名称`}
@@ -685,7 +686,12 @@ export const TextNode = memo(({ id, data, selected }: NodeProps<CanvasNode>) => 
             onFocus={() => setEditingText(true)}
             onBlur={() => setEditingText(false)}
             onDoubleClick={(event) => event.stopPropagation()}
-            onChange={(event) => updateNodeData(id, { content: event.target.value })}
+            onChange={(event) => {
+              const content = event.target.value
+              updateNodeData(id, shouldAutoUpdateTextNodeTitle(data)
+                ? { content, title: deriveTextNodeTitle(content), titleMode: 'auto' }
+                : { content })
+            }}
             placeholder={format === 'markdown' ? '输入 Markdown 源码…' : '写下想法、脚本或提示词…'}
             aria-label={`${data.title}内容`}
           />

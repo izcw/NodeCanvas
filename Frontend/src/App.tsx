@@ -10,6 +10,7 @@ import { cancelAgentRun, createShareLink, currentProjectId, deleteKnowledgeDocum
 import { ModelRegistryProvider, useModelRegistry } from './features/models/ModelRegistryContext'
 import { ModelManagerDialog } from './features/models/ModelManagerDialog'
 import { DocumentTitle, ProjectWorkspaceHome, ProjectWorkspaceProvider } from './features/workspace/ProjectWorkspace'
+import { deriveTextNodeTitle, shouldAutoUpdateTextNodeTitle } from './lib/nodeTitle'
 
 type CanvasSnapshot = { nodes: CanvasNode[]; edges: CanvasEdge[] }
 type PendingAgentModification = {
@@ -260,7 +261,7 @@ function Workspace() {
     }, 80)
   }, [fitView, nodes.length, setNodes])
 
-  const addText = useCallback((content = '', position?: XYPosition, onCreated?: (id: string) => void) => addCanvasNode('text', { title: content ? 'Agent 回应' : '灵感笔记', content, format: 'markdown' }, position, onCreated), [addCanvasNode])
+  const addText = useCallback((content = '', position?: XYPosition, onCreated?: (id: string) => void) => addCanvasNode('text', { title: deriveTextNodeTitle(content), titleMode: 'auto', content, format: 'markdown' }, position, onCreated), [addCanvasNode])
   const addComment = (position?: XYPosition) => addCanvasNode('comment', { title: '备注', content: '' }, position)
   const addImage = useCallback((position?: XYPosition, onCreated?: (id: string) => void) => addCanvasNode('image', { title: '图片生成' }, position, onCreated), [addCanvasNode])
   const chooseFile = (position?: XYPosition, onCreated?: (id: string) => void) => { pendingNodePosition.current = position; pendingNodeCreated.current = onCreated; fileInputRef.current?.click() }
@@ -336,7 +337,7 @@ function Workspace() {
       if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new DOMException('已暂停执行', 'AbortError')
       recordTokenUsage(model, run.usage)
       setNodes(graph.nodes.map((node) => node.id === sourceId
-        ? { ...node, data: { ...node.data, generationStatus: 'settling', generationRunId: run.run_id } }
+        ? { ...node, data: { ...node.data, ...(shouldAutoUpdateTextNodeTitle(runNodes.find((current) => current.id === sourceId)?.data ?? node.data) ? { title: deriveTextNodeTitle(node.data.content), titleMode: 'auto' as const } : {}), generationStatus: 'settling', generationRunId: run.run_id } }
         : node))
       setEdges(graph.edges)
       graphRevisionRef.current = graph.revision

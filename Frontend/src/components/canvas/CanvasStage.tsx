@@ -1,5 +1,5 @@
 import { addEdge, Background, BackgroundVariant, BaseEdge, ConnectionMode, getBezierPath, Handle, MiniMap, NodeToolbar, Panel, Position, ReactFlow as BaseReactFlow, SelectionMode, useReactFlow } from '@xyflow/react'
-import type { Connection, EdgeProps, OnConnectEnd, OnConnectStart, OnEdgesChange, OnMove, OnNodesChange, ReactFlowProps, XYPosition } from '@xyflow/react'
+import type { Connection, EdgeProps, NodeProps, OnConnectEnd, OnConnectStart, OnEdgesChange, OnMove, OnNodesChange, ReactFlowProps, XYPosition } from '@xyflow/react'
 import { AlignHorizontalSpaceAround, AlignVerticalSpaceAround, BoxSelect, ChevronDown, Copy, Eye, FolderPlus, Grid2X2, Grid3X3, History, Link2, LocateFixed, Map, MessageSquareText, Minimize2, Plus, Redo2, Search, Share2, Trash2, Undo2, Workflow, X } from 'lucide-react'
 import { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { AgentRunOptions, CanvasEdge, CanvasNode, ModelConfig } from '../../types/canvas'
@@ -100,10 +100,11 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   const [copiedHistoryId, setCopiedHistoryId] = useState<string | null>(null)
   const stageRef = useRef<HTMLElement>(null)
   const [selectionDragPosition, setSelectionDragPosition] = useState<XYPosition | null>(null)
+  const [selectionDragMode, setSelectionDragMode] = useState<Extract<MenuMode, 'context' | 'reference'> | null>(null)
   const [boxSelectionActive, setBoxSelectionActive] = useState(false)
   const [selectionMoving, setSelectionMoving] = useState(false)
   const [canvasPanning, setCanvasPanning] = useState(false)
-  const [selectionGenerateMenu, setSelectionGenerateMenu] = useState<Omit<MenuState, 'mode'> | null>(null)
+  const [selectionGenerateMenu, setSelectionGenerateMenu] = useState<(Omit<MenuState, 'mode'> & { mode: Extract<MenuMode, 'context' | 'reference'> }) | null>(null)
   const [pendingConnection, setPendingConnection] = useState<{ source: string; sourceHandle: string; canvasPosition: XYPosition } | null>(null)
   const [pointerConnectionActive, setPointerConnectionActive] = useState(false)
   const [pointerConnectionTargetId, setPointerConnectionTargetId] = useState<string | null>(null)
@@ -158,28 +159,35 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     }), [activeNodeId, connectableNodeIds, edges, focusedNodeId, hideEdges, selectedNodeIds])
   const temporaryNodeId = 'pending-connection-target'
   const selectionConnectorId = 'selection-connector'
-  const selectionConnector = useMemo(() => {
-    if (selectedNodes.length < 2) return null
+  const selectionContextConnectorId = 'selection-context-connector'
+  const selectionConnectors = useMemo(() => {
+    if (selectedNodes.length < 2) return []
+    const left = Math.min(...selectedNodes.map((node) => node.position.x))
     const right = Math.max(...selectedNodes.map((node) => node.position.x + (node.measured?.width ?? node.width ?? 0)))
     const top = Math.min(...selectedNodes.map((node) => node.position.y))
     const bottom = Math.max(...selectedNodes.map((node) => node.position.y + (node.measured?.height ?? node.height ?? 0)))
-    return { id: selectionConnectorId, type: 'selectionConnector', position: { x: right, y: (top + bottom) / 2 }, data: { title: '' }, className: 'selection-connector-node', width: 2, height: 2, measured: { width: 2, height: 2 }, selectable: false, draggable: false, deletable: false, style: { width: 2, height: 2 } } as unknown as CanvasNode
+    const centerY = (top + bottom) / 2
+    const connector = (id: string, x: number, side: 'context' | 'reference') => ({ id, type: 'selectionConnector', position: { x, y: centerY }, data: { title: '', selectionSide: side }, className: 'selection-connector-node', width: 2, height: 2, measured: { width: 2, height: 2 }, selectable: false, draggable: false, deletable: false, style: { width: 2, height: 2 } } as unknown as CanvasNode)
+    return [connector(selectionContextConnectorId, left, 'context'), connector(selectionConnectorId, right, 'reference')]
   }, [selectedNodes])
   const selectionPreviewPosition = selectionDragPosition ?? selectionGenerateMenu?.canvasPosition
   const flowNodes = useMemo(() => {
     const previewPosition = selectionPreviewPosition ?? pendingConnection?.canvasPosition
-    const extras = [selectionConnector, previewPosition ? { id: temporaryNodeId, type: 'connectionPreview', position: previewPosition, data: { title: '' }, width: 2, height: 2, measured: { width: 2, height: 2 }, selectable: false, draggable: false, deletable: false, style: { width: 2, height: 2, opacity: 0, pointerEvents: 'none' } } as unknown as CanvasNode : null].filter(Boolean) as CanvasNode[]
+    const extras = [...selectionConnectors, previewPosition ? { id: temporaryNodeId, type: 'connectionPreview', position: previewPosition, data: { title: '' }, width: 2, height: 2, measured: { width: 2, height: 2 }, selectable: false, draggable: false, deletable: false, style: { width: 2, height: 2, opacity: 0, pointerEvents: 'none' } } as unknown as CanvasNode : null].filter(Boolean) as CanvasNode[]
     const renderedNodes = pointerConnectionTargetId
       ? nodes.map((node) => node.id === pointerConnectionTargetId ? { ...node, className: `${node.className ?? ''} is-magnetic-target`.trim() } : node)
       : nodes
     return [...renderedNodes, ...extras]
-  }, [nodes, pendingConnection, pointerConnectionTargetId, selectionConnector, selectionPreviewPosition])
+  }, [nodes, pendingConnection, pointerConnectionTargetId, selectionConnectors, selectionPreviewPosition])
   const flowEdges = useMemo(() => {
     if (selectionPreviewPosition) {
+      const selectionMode = selectionDragMode ?? selectionGenerateMenu?.mode ?? 'reference'
       const previewEdges = selectedNodes
         .filter((node) => node.type !== 'comment')
         .map((node) => ({
-          ...createEdge({ source: node.id, sourceHandle: 'right-source', target: temporaryNodeId, targetHandle: 'left-target' }),
+          ...createEdge(selectionMode === 'context'
+            ? { source: temporaryNodeId, sourceHandle: 'right-source', target: node.id, targetHandle: 'left-target' }
+            : { source: node.id, sourceHandle: 'right-source', target: temporaryNodeId, targetHandle: 'left-target' }),
           id: `selection-preview-${node.id}`,
           data: { activeFlow: true },
         }))
@@ -190,8 +198,8 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
       ? { source: temporaryNodeId, sourceHandle: 'right-source', target: pendingConnection.source, targetHandle: 'left-target' }
       : { source: pendingConnection.source, sourceHandle: 'right-source', target: temporaryNodeId, targetHandle: 'left-target' }
     return [...visibleEdges, { ...createEdge(previewConnection), data: { activeFlow: true } }]
-  }, [pendingConnection, selectedNodes, selectionPreviewPosition, visibleEdges])
-  const isValidConnection = useCallback((connection: Connection | CanvasEdge) => connection.source !== connection.target && (connection.sourceHandle === 'right-source' || connection.sourceHandle === 'selection-source') && connection.targetHandle === 'left-target' && (connection.source === selectionConnectorId || connectableNodeIds.has(connection.source)) && connectableNodeIds.has(connection.target), [connectableNodeIds])
+  }, [pendingConnection, selectedNodes, selectionDragMode, selectionGenerateMenu?.mode, selectionPreviewPosition, visibleEdges])
+  const isValidConnection = useCallback((connection: Connection | CanvasEdge) => connection.source !== connection.target && (connection.sourceHandle === 'right-source' || connection.sourceHandle === 'selection-source' || connection.sourceHandle === 'selection-context-source') && connection.targetHandle === 'left-target' && ([selectionConnectorId, selectionContextConnectorId].includes(connection.source) || connectableNodeIds.has(connection.source)) && connectableNodeIds.has(connection.target), [connectableNodeIds])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -318,9 +326,12 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   }
   const onConnect = useCallback((connection: Connection) => {
     if (commentMode) return
-    if (connection.source === selectionConnectorId) {
+    if (connection.source === selectionConnectorId || connection.source === selectionContextConnectorId) {
       if (!connection.target) return
-      setEdges((current) => [...current, ...selectedNodes.filter((node) => node.type !== 'comment' && node.id !== connection.target && !current.some((edge) => edge.source === node.id && edge.target === connection.target)).map((node) => createEdge({ source: node.id, sourceHandle: 'right-source', target: connection.target!, targetHandle: connection.targetHandle ?? 'left-target' }))])
+      const context = connection.source === selectionContextConnectorId
+      setEdges((current) => [...current, ...selectedNodes.filter((node) => node.type !== 'comment' && node.id !== connection.target && !current.some((edge) => context ? edge.source === connection.target && edge.target === node.id : edge.source === node.id && edge.target === connection.target)).map((node) => context
+        ? createEdge({ source: connection.target!, sourceHandle: 'right-source', target: node.id, targetHandle: 'left-target' })
+        : createEdge({ source: node.id, sourceHandle: 'right-source', target: connection.target!, targetHandle: connection.targetHandle ?? 'left-target' }))])
       return
     }
     if (!isValidConnection(connection)) return
@@ -451,12 +462,13 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     setMenu({ mode, canvasPosition: screenToFlowPosition(point), screenPosition: { x: Math.max(12, Math.min(localX, bounds.width - menuWidth - 12)), y: Math.max(12, Math.min(localY, bounds.height - menuHeight - 12)) } })
   }, [screenToFlowPosition])
 
-  const setSelectionMenuAtPoint = useCallback((bounds: DOMRect, point: { x: number; y: number }) => {
+  const setSelectionMenuAtPoint = useCallback((bounds: DOMRect, point: { x: number; y: number }, mode: Extract<MenuMode, 'context' | 'reference'> = 'reference') => {
     const menuWidth = 342
     const menuHeight = 360
     const localX = point.x - bounds.left
     const localY = point.y - bounds.top
     setSelectionGenerateMenu({
+      mode,
       canvasPosition: screenToFlowPosition(point),
       screenPosition: {
         x: Math.max(12, Math.min(localX, bounds.width - menuWidth - 12)),
@@ -466,12 +478,14 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   }, [screenToFlowPosition])
 
   const onConnectStart: OnConnectStart = useCallback((event, { nodeId, handleId }) => {
-    if (nodeId !== selectionConnectorId || handleId !== 'selection-source') return
+    const context = nodeId === selectionContextConnectorId && handleId === 'selection-context-source'
+    if (!context && (nodeId !== selectionConnectorId || handleId !== 'selection-source')) return
     const point = getClientPoint(event)
     if (!point) return
     setMenu(null)
     setPendingConnection(null)
     setSelectionGenerateMenu(null)
+    setSelectionDragMode(context ? 'context' : 'reference')
     setSelectionDragPosition(screenToFlowPosition(point))
   }, [screenToFlowPosition])
 
@@ -490,8 +504,11 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   }, [screenToFlowPosition, selectionDragPosition])
 
   const onConnectEnd: OnConnectEnd = useCallback((event, connectionState) => {
-    const fromSelection = connectionState.fromNode?.id === selectionConnectorId
-    if (fromSelection) setSelectionDragPosition(null)
+    const fromSelection = connectionState.fromNode?.id === selectionConnectorId || connectionState.fromNode?.id === selectionContextConnectorId
+    if (fromSelection) {
+      setSelectionDragPosition(null)
+      setSelectionDragMode(null)
+    }
     if (commentMode || connectionState.isValid || !connectionState.fromNode) return
     const point = getClientPoint(event)
     if (!point) return
@@ -504,7 +521,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
 
     if (fromSelection) {
       const stage = document.querySelector('.canvas-stage')
-      if (stage instanceof HTMLElement) setSelectionMenuAtPoint(stage.getBoundingClientRect(), point)
+      if (stage instanceof HTMLElement) setSelectionMenuAtPoint(stage.getBoundingClientRect(), point, connectionState.fromNode.id === selectionContextConnectorId ? 'context' : 'reference')
       return
     }
     if (connectionState.fromNode.type === 'comment') return
@@ -602,7 +619,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
         const elementsAtPoint = document.elementsFromPoint(point.x, point.y)
         const targetNode = elementsAtPoint
           .map((element) => element.closest('.react-flow__node'))
-          .find((element): element is Element => Boolean(element && ![temporaryNodeId, selectionConnectorId].includes(element.getAttribute('data-id') ?? '')))
+          .find((element): element is Element => Boolean(element && ![temporaryNodeId, selectionConnectorId, selectionContextConnectorId].includes(element.getAttribute('data-id') ?? '')))
         const targetId = magneticTarget?.id ?? targetNode?.getAttribute('data-id')
 
         if (targetId === sourceId || (targetId && !connectableNodeIds.has(targetId))) {
@@ -642,18 +659,85 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   }, [commentMode, connectableNodeIds, nodeInteractionsLocked, screenToFlowPosition, setEdges, setMenuAtPoint])
 
   useEffect(() => {
-    const openSelectionMenu = (event: Event) => {
-      const { x, y } = (event as CustomEvent<{ x: number; y: number }>).detail
-      const stage = document.querySelector('.canvas-stage')
-      if (!(stage instanceof HTMLElement)) return
+    const startSelectionConnection = (event: Event) => {
+      if (commentMode || nodeInteractionsLocked || selectedNodes.length < 2) return
+      const { side, pointerId, x, y } = (event as CustomEvent<{ side: Extract<MenuMode, 'context' | 'reference'>; pointerId: number; x: number; y: number }>).detail
+      const startPoint = { x, y }
+      let moved = false
+
+      const findTarget = (point: { x: number; y: number }) => {
+        const selector = side === 'context' ? '.node-anchor--right' : '.node-anchor--left'
+        let nearest: { id: string; point: { x: number; y: number }; distance: number } | null = null
+        for (const anchor of document.querySelectorAll<HTMLElement>(`.react-flow__node ${selector}`)) {
+          const node = anchor.closest<HTMLElement>('.react-flow__node')
+          const id = node?.dataset.id
+          if (!id || selectedNodeIds.includes(id) || !connectableNodeIds.has(id)) continue
+          const bounds = anchor.getBoundingClientRect()
+          const anchorPoint = { x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 }
+          const distance = Math.hypot(point.x - anchorPoint.x, point.y - anchorPoint.y)
+          if (distance <= 72 && (!nearest || distance < nearest.distance)) nearest = { id, point: anchorPoint, distance }
+        }
+        return nearest
+      }
+
       setMenu(null)
       setPendingConnection(null)
-      setSelectionDragPosition(null)
-      setSelectionMenuAtPoint(stage.getBoundingClientRect(), { x, y })
+      setSelectionGenerateMenu(null)
+      setSelectionDragMode(side)
+      setSelectionDragPosition(screenToFlowPosition(startPoint))
+
+      const cleanup = () => {
+        window.removeEventListener('pointermove', followPointer, true)
+        window.removeEventListener('pointerup', finishPointer, true)
+        window.removeEventListener('pointercancel', cancelPointer, true)
+        setSelectionDragPosition(null)
+        setSelectionDragMode(null)
+      }
+      const followPointer = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId !== pointerId) return
+        pointerEvent.preventDefault()
+        if (Math.hypot(pointerEvent.clientX - x, pointerEvent.clientY - y) >= 4) moved = true
+        const target = findTarget({ x: pointerEvent.clientX, y: pointerEvent.clientY })
+        setPointerConnectionTargetId((current) => current === target?.id ? current : target?.id ?? null)
+        setSelectionDragPosition(screenToFlowPosition(target?.point ?? { x: pointerEvent.clientX, y: pointerEvent.clientY }))
+      }
+      const cancelPointer = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId !== pointerId) return
+        cleanup()
+        setPointerConnectionTargetId(null)
+      }
+      const finishPointer = (pointerEvent: PointerEvent) => {
+        if (pointerEvent.pointerId !== pointerId) return
+        const point = { x: pointerEvent.clientX, y: pointerEvent.clientY }
+        const magneticTarget = findTarget(point)
+        const elementsAtPoint = document.elementsFromPoint(point.x, point.y)
+        const droppedNode = elementsAtPoint.map((element) => element.closest('.react-flow__node')).find((node): node is Element => Boolean(node && connectableNodeIds.has(node.getAttribute('data-id') ?? '')))
+        const targetId = magneticTarget?.id ?? droppedNode?.getAttribute('data-id')
+        cleanup()
+        setPointerConnectionTargetId(null)
+        if (targetId && !selectedNodeIds.includes(targetId)) {
+          setEdges((current) => {
+            const additions = selectedNodes
+              .filter((node) => node.type !== 'comment')
+              .filter((node) => !current.some((edge) => side === 'context' ? edge.source === targetId && edge.target === node.id : edge.source === node.id && edge.target === targetId))
+              .map((node) => side === 'context'
+                ? createEdge({ source: targetId, sourceHandle: 'right-source', target: node.id, targetHandle: 'left-target' })
+                : createEdge({ source: node.id, sourceHandle: 'right-source', target: targetId, targetHandle: 'left-target' }))
+            return additions.length ? [...current, ...additions] : current
+          })
+          return
+        }
+        const stage = document.querySelector('.canvas-stage')
+        if (stage instanceof HTMLElement) setSelectionMenuAtPoint(stage.getBoundingClientRect(), moved ? point : startPoint, side)
+      }
+
+      window.addEventListener('pointermove', followPointer, { capture: true, passive: false })
+      window.addEventListener('pointerup', finishPointer, true)
+      window.addEventListener('pointercancel', cancelPointer, true)
     }
-    window.addEventListener('nodecanvas:open-selection-menu', openSelectionMenu)
-    return () => window.removeEventListener('nodecanvas:open-selection-menu', openSelectionMenu)
-  }, [setSelectionMenuAtPoint])
+    window.addEventListener('nodecanvas:start-selection-connection', startSelectionConnection)
+    return () => window.removeEventListener('nodecanvas:start-selection-connection', startSelectionConnection)
+  }, [commentMode, connectableNodeIds, nodeInteractionsLocked, screenToFlowPosition, selectedNodeIds, selectedNodes, setEdges, setSelectionMenuAtPoint])
 
   const openMenuAtCursor = (event: ReactMouseEvent<HTMLElement>) => {
     const target = event.target instanceof HTMLElement ? event.target : null
@@ -865,12 +949,15 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
   }
 
   const connectSelectionToCreatedNode = (id: string) => {
-    if (!selectedNodes.length) return
+    if (!selectedNodes.length || !selectionGenerateMenu) return
+    const mode = selectionGenerateMenu.mode
     setEdges((current) => {
       const additions = selectedNodes
         .filter((node) => node.type !== 'comment')
-        .filter((node) => node.id !== id && !current.some((edge) => edge.source === node.id && edge.target === id))
-        .map((node) => createEdge({ source: node.id, sourceHandle: 'right-source', target: id, targetHandle: 'left-target' }))
+        .filter((node) => node.id !== id && !current.some((edge) => mode === 'context' ? edge.source === id && edge.target === node.id : edge.source === node.id && edge.target === id))
+        .map((node) => mode === 'context'
+          ? createEdge({ source: id, sourceHandle: 'right-source', target: node.id, targetHandle: 'left-target' })
+          : createEdge({ source: node.id, sourceHandle: 'right-source', target: id, targetHandle: 'left-target' }))
       return additions.length ? [...current, ...additions] : current
     })
     setSelectionGenerateMenu(null)
@@ -905,7 +992,7 @@ export function CanvasStage({ nodes, edges, onNodesChange, onEdgesChange, setEdg
     </CanvasNodeReadOnlyContext.Provider>
     {searchOpen && <div className="node-search-overlay" onMouseDown={() => setSearchOpen(false)}><div className="node-search-dialog" onMouseDown={(event) => event.stopPropagation()}><div className="node-search-input"><Search size={18} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={onSearchKeyDown} placeholder="搜索节点…" /></div><div className="node-search-results">{searchResults.map((node, index) => <button key={node.id} className={index === highlightedSearchIndex ? 'highlighted' : ''} aria-selected={index === highlightedSearchIndex} onMouseEnter={() => setHighlightedSearchIndex(index)} onClick={() => chooseSearchResult(node)}><span>{node.data.title}</span><small>{node.type}</small></button>)}</div></div></div>}
     {menu && <AddNodeMenu title={menu.mode === 'context' ? '添加上下文' : menu.mode === 'reference' ? '引用该节点生成' : '添加节点'} showImage={menu.mode !== 'context'} location={menu.screenPosition} onText={() => onAddText(menu.canvasPosition, connectCreatedNode)} onImage={() => onAddImage(menu.canvasPosition, connectCreatedNode)} onFile={() => onAddFile(menu.canvasPosition, connectCreatedNode)} onClose={closeMenu} />}
-    {selectionGenerateMenu && <AddNodeMenu title="引用该节点生成" location={selectionGenerateMenu.screenPosition} onText={() => onAddText(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onImage={() => onAddImage(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onFile={() => onAddFile(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onClose={() => setSelectionGenerateMenu(null)} />}
+    {selectionGenerateMenu && <AddNodeMenu title={selectionGenerateMenu.mode === 'context' ? '添加上下文' : '引用该节点生成'} showImage={selectionGenerateMenu.mode !== 'context'} location={selectionGenerateMenu.screenPosition} onText={() => onAddText(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onImage={() => onAddImage(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onFile={() => onAddFile(selectionGenerateMenu.canvasPosition, connectSelectionToCreatedNode)} onClose={() => setSelectionGenerateMenu(null)} />}
     {knowledgePreview && <KnowledgePreview item={knowledgePreview} onClose={onCloseKnowledgePreview} />}
     {historyOpen && <div className="canvas-history-overlay" onMouseDown={() => setHistoryOpen(false)}><section className="canvas-history-dialog" role="dialog" aria-label="聊天历史" onMouseDown={(event) => event.stopPropagation()}><header><strong>聊天历史</strong><div className="canvas-history-header-actions"><button onClick={() => void clearChatHistory()} disabled={!chatHistory.length} aria-label="清空聊天历史" title="清空聊天历史"><Trash2 size={14} /></button><button onClick={() => setHistoryOpen(false)} aria-label="关闭聊天历史" title="关闭"><X size={16} /></button></div></header><nav>{(['all', 'text', 'image', 'agent', 'file', 'comment'] as const).map((type) => <button key={type} className={historyFilter === type ? 'active' : ''} onClick={() => setHistoryFilter(type)}>{type === 'all' ? '全部' : type === 'text' ? '文本' : type === 'image' ? '图片' : type === 'agent' ? 'Agent' : type === 'file' ? '文件' : '备注'}</button>)}</nav><div className="canvas-history-list">{chatHistory.filter((item) => historyFilter === 'all' || item.category === historyFilter).map((item) => <article key={item.id}><div className="canvas-history-entry-header"><small>{item.category === 'agent' ? 'Agent' : item.category} · {item.createdAt}</small><button className="canvas-history-copy" onClick={() => void copyHistoryEntry(item)} aria-label={copiedHistoryId === item.id ? '已复制聊天记录' : '复制聊天记录'} title={copiedHistoryId === item.id ? '已复制' : '复制'}>{copiedHistoryId === item.id ? '已复制' : <Copy size={14} />}</button></div><strong>{item.title || '未命名节点'}</strong><p>{item.prompt}</p></article>)}{chatHistory.filter((item) => historyFilter === 'all' || item.category === historyFilter).length === 0 && <p>暂无该分类的聊天记录。</p>}</div></section></div>}
   </section>
@@ -915,14 +1002,21 @@ function createEdge(connection: Connection): CanvasEdge {
   return { ...connection, id: `edge-${connection.source}-${connection.sourceHandle}-${connection.target}-${connection.targetHandle}-${Date.now()}`, type: 'flow', animated: false, selected: false, style: { stroke: '#8294a6', strokeWidth: 2.5 } }
 }
 
-function SelectionConnectorNode() {
-  const openMenu = (event: React.MouseEvent) => {
+function SelectionConnectorNode({ data }: NodeProps<CanvasNode>) {
+  const side = (data as CanvasNode['data'] & { selectionSide?: 'context' | 'reference' }).selectionSide ?? 'reference'
+  const startSelectionConnection = (event: ReactPointerEvent) => {
+    if (event.button !== 0) return
+    event.preventDefault()
     event.stopPropagation()
-    window.dispatchEvent(new CustomEvent('nodecanvas:open-selection-menu', {
-      detail: { x: event.clientX, y: event.clientY },
+    window.dispatchEvent(new CustomEvent('nodecanvas:start-selection-connection', {
+      detail: { side, pointerId: event.pointerId, x: event.clientX, y: event.clientY },
     }))
   }
-  return <Handle id="selection-source" type="source" position={Position.Right} className="selection-connect-handle" aria-label="引用所有选中的节点生成" title="拖拽连接或点击生成" onClick={openMenu} />
+  return <>
+    <span onPointerDownCapture={startSelectionConnection}>
+      <Handle id={side === 'context' ? 'selection-context-source' : 'selection-source'} type="source" position={side === 'context' ? Position.Left : Position.Right} className={`selection-connect-handle${side === 'context' ? ' selection-connect-handle--context' : ''}`} aria-label={side === 'context' ? '为所有选中的节点添加上下文' : '引用所有选中的节点生成'} title={side === 'context' ? '拖拽添加上下文' : '拖拽连接或点击生成'} />
+    </span>
+  </>
 }
 
 function ConnectionPreviewNode() {

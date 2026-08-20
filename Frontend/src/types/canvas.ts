@@ -2,6 +2,7 @@ import type { Edge, Node } from '@xyflow/react'
 
 export type CanvasNodeData = {
   title: string
+  titleMode?: 'auto' | 'manual'
   content?: string
   imageUrl?: string
   fileName?: string
