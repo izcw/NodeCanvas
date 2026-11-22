@@ -5,13 +5,13 @@ import { HeroStage } from "./components/HeroStage";
 import { HashLink } from "./components/HashLink";
 
 const HERO_IMAGE =
-  "https://www.lumehub.duoyu.link/resource/blog/original/cb2e47afbfcd_20260727.png";
+  "https://lumehub.duoyu.link/resource/blog/original/cb2e47afbfcd_20260727.png";
 const CAPABILITY_IMAGES = [
-  "https://www.lumehub.duoyu.link/resource/blog/original/a6421cdc2cef_20260727.png",
-  "https://www.lumehub.duoyu.link/resource/blog/original/33b03dac6134_20260727.png",
-  "https://www.lumehub.duoyu.link/resource/blog/original/551ea32eecc7_20260727.png",
-  "https://www.lumehub.duoyu.link/resource/blog/original/493d2c4e6d05_20260727.png",
-  "https://www.lumehub.duoyu.link/resource/blog/original/85fb50d66e5e_20260727.png",
+  "https://lumehub.duoyu.link/resource/blog/original/a6421cdc2cef_20260727.png",
+  "https://lumehub.duoyu.link/resource/blog/original/33b03dac6134_20260727.png",
+  "https://lumehub.duoyu.link/resource/blog/original/551ea32eecc7_20260727.png",
+  "https://lumehub.duoyu.link/resource/blog/original/493d2c4e6d05_20260727.png",
+  "https://lumehub.duoyu.link/resource/blog/original/85fb50d66e5e_20260727.png",
 ];
 
 const sections: ProductSectionData[] = [

@@ -26,7 +26,7 @@ type WorkspaceContextValue = {
 
 const STORAGE_KEY = 'nodecanvas:workspace-projects:v1'
 const VIEW_STORAGE_KEY = 'nodecanvas:workspace-view:v1'
-const WORKSPACE_AVATAR_URL = 'https://www.lumehub.duoyu.link/resource/liulan/kasumi/original/051a92ea0787_20260627.jpg'
+const WORKSPACE_AVATAR_URL = 'https://lumehub.duoyu.link/resource/liulan/kasumi/original/051a92ea0787_20260627.jpg'
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null)
 
 function loadProjects() {
